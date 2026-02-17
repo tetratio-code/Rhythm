@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王.</h1>
+  <h1 style="margin: 0 0 10px;">節奏王</h1>
 
   <div class="box">
     <div class="row">
@@ -57,7 +57,40 @@
   </div>
 
   <!-- VexFlow -->
-  <script src="https://cdn.jsdelivr.net/npm/vexflow@5.0.0/build/vexflow.js"></script>
+  <script type="module">
+  import { Renderer, Stave, StaveNote, Voice, Formatter } 
+    from "https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js";
+  
+  function renderTest() {
+    const div = document.getElementById("score");
+    div.innerHTML = "";
+  
+    const renderer = new Renderer(div, Renderer.Backends.SVG);
+    renderer.resize(600, 200);
+  
+    const context = renderer.getContext();
+  
+    const stave = new Stave(10, 40, 500);
+    stave.addClef("treble").addTimeSignature("4/4");
+    stave.setContext(context).draw();
+  
+    const notes = [
+      new StaveNote({ keys: ["c/5"], duration: "q" }),
+      new StaveNote({ keys: ["c/5"], duration: "q" }),
+      new StaveNote({ keys: ["c/5"], duration: "q" }),
+      new StaveNote({ keys: ["c/5"], duration: "q" }),
+    ];
+  
+    const voice = new Voice({ num_beats: 4, beat_value: 4 });
+    voice.addTickables(notes);
+  
+    new Formatter().joinVoices([voice]).format([voice], 400);
+  
+    voice.draw(context, stave);
+  }
+  
+  renderTest();
+  </script>
 
   <script>
     // ======== 錄入與資料 ========
