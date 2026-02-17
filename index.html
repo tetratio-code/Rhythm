@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王</h1>
+  <h1 style="margin: 0 0 10px;">節奏王.</h1>
 
   <div class="box">
     <div class="row">
@@ -288,63 +288,82 @@
     // ======== VexFlow 繪製（使用 window.VF_） ========
     function renderWithVexFlow(measures, bpm) {
       const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot } = window.VF_;
-      const container = $("score");
+      const container = document.getElementById("score");
       container.innerHTML = "";
-
+    
       const width = Math.max(900, Math.min(1400, container.clientWidth || 1000));
       const staffHeight = 150;
       const margin = 18;
-
+    
       const measuresPerLine = width >= 1200 ? 6 : (width >= 1000 ? 5 : 4);
       const totalLines = Math.max(1, Math.ceil(measures.length / measuresPerLine));
-
+    
       const renderer = new Renderer(container, Renderer.Backends.SVG);
       renderer.resize(width, totalLines * staffHeight + margin * 2);
       const ctx = renderer.getContext();
-
+    
       let y = margin;
-
+    
       for (let line = 0; line < totalLines; line++) {
         const start = line * measuresPerLine;
         const end = Math.min(measures.length, start + measuresPerLine);
         const lineMeasures = measures.slice(start, end);
-
+    
         const staffW = Math.floor((width - margin * 2) / measuresPerLine);
         let x = margin;
-
+    
         for (let mi = 0; mi < lineMeasures.length; mi++) {
           const tokens = lineMeasures[mi];
-
+    
           const stave = new Stave(x, y, staffW);
           if (line === 0 && mi === 0) {
             stave.addClef("treble").addTimeSignature("4/4");
             stave.setText(`♩ = ${bpm}`, 1, { shift_y: -10, shift_x: 10 }); // 1=ABOVE
           }
           stave.setContext(ctx).draw();
-
-          const vexNotes = tokens.map(t => {
-            const dur = t.dur + (t.isRest ? "r" : "");
-            const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: dur });
-            if (t.dots) Dot.buildAndAttach([n], { all: true });
-            return n;
-          });
-
-          // 讓 8/16 音符自動連線（更像正式譜）
-          const beams = Beam.generateBeams(vexNotes, {
-            groups: [{ num_beats: 1, beat_value: 4 }] // 4/4 每拍一組
-          });
-
-          const voice = new Voice({ num_beats: 4, beat_value: 4 });
-          voice.addTickables(vexNotes);
-
-          new Formatter().joinVoices([voice]).format([voice], staffW - 30);
-
-          voice.draw(ctx, stave);
-          beams.forEach(b => b.setContext(ctx).draw());
-
+    
+          try {
+            const vexNotes = tokens.map(t => {
+              const dur = t.dur + (t.isRest ? "r" : "");
+              const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: dur });
+              if (t.dots) Dot.buildAndAttach([n], { all: true });
+              return n;
+            });
+    
+            const voice = new Voice({ num_beats: 4, beat_value: 4 });
+            // ✅ 關鍵：SOFT 模式，避免 tick 對不上就整段不畫
+            voice.setMode(Voice.Mode.SOFT);
+    
+            voice.addTickables(vexNotes);
+    
+            new Formatter().joinVoices([voice]).format([voice], staffW - 30);
+    
+            // ✅ 先畫音符（就算 beam 壞了也要先看到音符）
+            voice.draw(ctx, stave);
+    
+            // ✅ Beam 可能會因為 rest / whole note 等狀況丟例外，保護起來
+            try {
+              const beams = Beam.generateBeams(vexNotes, {
+                groups: [{ num_beats: 1, beat_value: 4 }]
+              });
+              beams.forEach(b => b.setContext(ctx).draw());
+            } catch (e) {
+              // 不影響音符顯示
+              console.warn("Beam error:", e);
+            }
+          } catch (e) {
+            console.error("Render error:", e);
+            // 在畫面上顯示錯誤（避免你只看到空譜表）
+            const msg = document.createElement("div");
+            msg.className = "warn";
+            msg.style.margin = "8px 0 0";
+            msg.textContent = "繪譜時發生錯誤（請開 Console 看 Render error）。";
+            container.appendChild(msg);
+          }
+    
           x += staffW;
         }
-
+    
         y += staffHeight;
       }
     }
