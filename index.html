@@ -56,40 +56,14 @@
     <div id="log" style="margin-top: 8px;"></div>
   </div>
 
-  <!-- VexFlow -->
+  <!-- VexFlow (ESM) -->
   <script type="module">
-  import { Renderer, Stave, StaveNote, Voice, Formatter } 
-    from "https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js";
-  
-  function renderTest() {
-    const div = document.getElementById("score");
-    div.innerHTML = "";
-  
-    const renderer = new Renderer(div, Renderer.Backends.SVG);
-    renderer.resize(600, 200);
-  
-    const context = renderer.getContext();
-  
-    const stave = new Stave(10, 40, 500);
-    stave.addClef("treble").addTimeSignature("4/4");
-    stave.setContext(context).draw();
-  
-    const notes = [
-      new StaveNote({ keys: ["c/5"], duration: "q" }),
-      new StaveNote({ keys: ["c/5"], duration: "q" }),
-      new StaveNote({ keys: ["c/5"], duration: "q" }),
-      new StaveNote({ keys: ["c/5"], duration: "q" }),
-    ];
-  
-    const voice = new Voice({ num_beats: 4, beat_value: 4 });
-    voice.addTickables(notes);
-  
-    new Formatter().joinVoices([voice]).format([voice], 400);
-  
-    voice.draw(context, stave);
-  }
-  
-  renderTest();
+    import {
+      Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot
+    } from "https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js";
+
+    // 讓非 module 的主程式可以用
+    window.VF_ = { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot };
   </script>
 
   <script>
@@ -99,7 +73,7 @@
 
     let isRecording = false;
     let times = [];     // keydown timestamps (ms)
-    let intervals = []; // IOI in ms between key presses (length = times.length-1)
+    let intervals = []; // IOI in ms between key presses
     let lastKeyTime = -1;
 
     const $ = (id) => document.getElementById(id);
@@ -108,6 +82,15 @@
       const el = $("status");
       el.textContent = text;
       el.className = cls;
+    }
+
+    function renderEmptyScore(msg="尚未輸入節奏。") {
+      const el = $("score");
+      el.innerHTML = "";
+      const p = document.createElement("div");
+      p.className = "muted";
+      p.textContent = msg;
+      el.appendChild(p);
     }
 
     function resetAll() {
@@ -127,18 +110,24 @@
     }
 
     function startRecording() {
-      resetAll();
+      // 不要 resetAll() 因為會把畫面清掉又變成「尚未輸入」；
+      // 但我們確實要清資料
       isRecording = true;
+      times = [];
+      intervals = [];
+      lastKeyTime = -1;
+
+      $("noteCount").textContent = "0";
       $("btnStart").disabled = true;
       $("btnStop").disabled = false;
       setStatus("錄入中（Space 結束）", "ok");
-      // 第一個擊鍵當作起點
-      // 使用者可能先按按鈕再敲鍵，所以我們在第一個 keydown 才記錄 times[0]
+      renderEmptyScore("錄入中…（按 Space 結束）");
     }
 
     function stopRecording() {
       if (!isRecording) return;
       isRecording = false;
+
       $("btnStart").disabled = false;
       $("btnStop").disabled = true;
 
@@ -148,7 +137,6 @@
         return;
       }
 
-      // 建 intervals
       intervals = [];
       for (let i=1; i<times.length; i++) intervals.push(times[i] - times[i-1]);
 
@@ -159,7 +147,6 @@
     document.addEventListener("keydown", (e) => {
       if (!isRecording) return;
 
-      // Space: stop
       if (e.code === "Space") {
         e.preventDefault();
         stopRecording();
@@ -167,10 +154,7 @@
       }
 
       const now = performance.now();
-      if (lastKeyTime >= 0 && (now - lastKeyTime) < DEBOUNCE_MS) {
-        // 防連點：忽略
-        return;
-      }
+      if (lastKeyTime >= 0 && (now - lastKeyTime) < DEBOUNCE_MS) return;
       lastKeyTime = now;
 
       if (times.length >= MAX_NOTES) {
@@ -188,18 +172,9 @@
     $("debounce").textContent = String(DEBOUNCE_MS);
 
     // ======== 分析：估計基本單位(≈16分)並量化 ========
-    function median(arr) {
-      const a = [...arr].sort((x,y)=>x-y);
-      const mid = Math.floor(a.length/2);
-      return (a.length%2===0) ? (a[mid-1]+a[mid])/2 : a[mid];
-    }
-
-    // 目標：找一個 unitMs，使 intervals 接近 unitMs 的整數倍
-    // 類似你 C 程式：掃描候選 i，計算誤差，挑最小的
     function estimateUnitMs(intervals) {
       const minItv = Math.min(...intervals);
-      // 掃描範圍：從 50ms 到 2*minItv（貼近原作）
-      const start = Math.max(40, Math.floor(0.5 * minItv)); // 稍放寬
+      const start = Math.max(40, Math.floor(0.5 * minItv));
       const end   = Math.max(start+1, Math.floor(2.2 * minItv));
 
       let best = { unit: Math.round(minItv), score: Infinity };
@@ -207,11 +182,10 @@
       for (let u = start; u <= end; u++) {
         let err = 0;
         for (const x of intervals) {
-          const k = Math.max(1, Math.round(x / u));   // 最接近的倍數（至少 1）
+          const k = Math.max(1, Math.round(x / u));
           const q = k * u;
           err += Math.abs(x - q);
         }
-        // normalize（避免偏好較小u）
         const score = err / (u * intervals.length);
         if (score < best.score) best = { unit: u, score };
       }
@@ -219,30 +193,22 @@
     }
 
     function quantizeIntervalsTo16th(intervals, unitMs) {
-      // 以 unitMs 作為 16 分音符，將每段間隔量化成 N 個 16分
-      // 至少 1
       return intervals.map(x => Math.max(1, Math.round(x / unitMs)));
     }
 
-    // ======== 記譜：將 16分單位數轉成 VexFlow 音符/休止、跨小節 tie ========
-    // 一小節 4/4 = 16 個 16分
+    // ======== 記譜：將 16分單位數轉成音符/休止 ========
     const UNITS_PER_BAR = 16;
 
-    // 將某段長度 (units) 拆成「可記譜」的時值（盡量用大時值、必要時附點），並回傳 token
-    // token: { units, dur, dots, isRest, tieFromPrev? }
     function splitUnitsToDurations(units, isRest=false) {
-      // 可用的基本：1(16),2(8),4(q),8(h),16(w)
-      // 加附點：*1.5 -> 3,6,12 (16分單位)
-      // 也可用組合達成任意整數（以 greedy 近似最佳）
       const options = [
-        {units: 16, dur: "w", dots: 0},
-        {units: 12, dur: "h", dots: 1}, // dotted half
-        {units: 8,  dur: "h", dots: 0},
-        {units: 6,  dur: "q", dots: 1}, // dotted quarter
-        {units: 4,  dur: "q", dots: 0},
-        {units: 3,  dur: "8", dots: 1}, // dotted eighth
-        {units: 2,  dur: "8", dots: 0},
-        {units: 1,  dur: "16",dots: 0},
+        {units: 16, dur: "w",  dots: 0},
+        {units: 12, dur: "h",  dots: 1},
+        {units: 8,  dur: "h",  dots: 0},
+        {units: 6,  dur: "q",  dots: 1},
+        {units: 4,  dur: "q",  dots: 0},
+        {units: 3,  dur: "8",  dots: 1},
+        {units: 2,  dur: "8",  dots: 0},
+        {units: 1,  dur: "16", dots: 0},
       ];
 
       const out = [];
@@ -255,15 +221,12 @@
       return out;
     }
 
-    // 把整段節奏（每次敲擊間隔 -> 視為「前一顆音的時值」）轉成小節序列
     function buildMeasuresFromQuantized(qUnits) {
-      // qUnits[i] = 第 i 次敲擊到第 i+1 次敲擊的間隔，以 16分單位表示
-      // 我們用一個固定音高 C5 表示節奏音
       const measures = [];
       let cur = [];
       let used = 0;
 
-      function pushToMeasure(token) {
+      function push(token) {
         cur.push(token);
         used += token.units;
         if (used === UNITS_PER_BAR) {
@@ -273,204 +236,121 @@
         }
       }
 
-      for (let idx=0; idx<qUnits.length; idx++) {
-        let u = qUnits[idx];
-
+      for (let i=0; i<qUnits.length; i++) {
+        let u = qUnits[i];
         while (u > 0) {
           const space = UNITS_PER_BAR - used;
           const take = Math.min(space, u);
 
-          // 將 take 拆成可記譜的 durations
-          const parts = splitUnitsToDurations(take, /*isRest*/false);
-          for (let p=0; p<parts.length; p++) pushToMeasure(parts[p]);
+          const parts = splitUnitsToDurations(take, false);
+          parts.forEach(push);
 
           u -= take;
-
-          // 若跨小節，下一小節開始應該 tie（延音線）接續
-          // 我們用 tie flags 後處理：在 token 上標記 tieStart/tieEnd
-          if (u > 0 && used === 0) {
-            // 新小節開始：表示上一個音跨過來
-            // 實作方式：在上一小節最後一個 non-rest token 標 tieStart，
-            // 新小節第一個 non-rest token 標 tieEnd
-            const prevMeasure = measures[measures.length-1];
-            const prevLast = [...prevMeasure].reverse().find(t=>!t.isRest);
-            if (prevLast) prevLast.tieStart = true;
-
-            // 下一小節第一個音會在 pushToMeasure 時加上 tieEnd
-            // 先做一個標記，等下一次加入音符時套上
-            measures._pendingTieEnd = true;
-          }
         }
       }
 
-      // 結尾補休止到滿小節
+      // 補滿最後小節
       if (used !== 0) {
         const restUnits = UNITS_PER_BAR - used;
-        const rests = splitUnitsToDurations(restUnits, /*isRest*/true);
-        for (const r of rests) pushToMeasure(r);
+        splitUnitsToDurations(restUnits, true).forEach(push);
       }
 
       return measures;
     }
 
-    // ======== 用 VexFlow 繪製五線譜 ========
-    function renderEmptyScore(msg="尚未輸入節奏。") {
-      const el = $("score");
-      el.innerHTML = "";
-      const p = document.createElement("div");
-      p.className = "muted";
-      p.textContent = msg;
-      el.appendChild(p);
-    }
-
     function analyzeAndRender(intervals) {
+      // 等 VexFlow module 把 VF_ 掛好（避免極少數載入競速）
+      if (!window.VF_) {
+        setTimeout(() => analyzeAndRender(intervals), 50);
+        return;
+      }
+
       const est = estimateUnitMs(intervals);
       const unitMs = est.unit;
       const score = est.score;
 
       const q = quantizeIntervalsTo16th(intervals, unitMs);
-
-      // BPM：四分音符 = 4個16分
       const bpm = 60000 / (unitMs * 4);
 
       $("unitMs").textContent = String(unitMs);
       $("bpm").textContent = String(Math.round(bpm));
       $("fit").textContent = score.toFixed(4);
 
-      // log
       const rawLine = intervals.map(x=>x.toFixed(1)).join(", ");
       const qLine = q.join(", ");
       $("log").textContent =
         `raw intervals (ms):\n${rawLine}\n\nquantized (16th units):\n${qLine}\n\nbars: 4/4, 16 units per bar`;
 
-      // build measures
       const measures = buildMeasuresFromQuantized(q);
-
-      // 繪製
       renderWithVexFlow(measures, Math.round(bpm));
     }
 
+    // ======== VexFlow 繪製（使用 window.VF_） ========
     function renderWithVexFlow(measures, bpm) {
-      const VF = Vex.Flow;
+      const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot } = window.VF_;
       const container = $("score");
       container.innerHTML = "";
 
-      // 動態寬度
       const width = Math.max(900, Math.min(1400, container.clientWidth || 1000));
-      const staffHeight = 140;
+      const staffHeight = 150;
       const margin = 18;
 
-      // 每行放幾小節（視寬度調整）
       const measuresPerLine = width >= 1200 ? 6 : (width >= 1000 ? 5 : 4);
+      const totalLines = Math.max(1, Math.ceil(measures.length / measuresPerLine));
 
-      const renderer = new VF.Renderer(container, VF.Renderer.Backends.SVG);
-      const totalLines = Math.ceil(measures.length / measuresPerLine);
-      renderer.resize(width, totalLines * staffHeight + margin*2);
-
+      const renderer = new Renderer(container, Renderer.Backends.SVG);
+      renderer.resize(width, totalLines * staffHeight + margin * 2);
       const ctx = renderer.getContext();
 
       let y = margin;
-      let globalTieId = 0;
 
-      for (let line=0; line<totalLines; line++) {
+      for (let line = 0; line < totalLines; line++) {
         const start = line * measuresPerLine;
         const end = Math.min(measures.length, start + measuresPerLine);
         const lineMeasures = measures.slice(start, end);
 
-        // 每小節寬度
-        const staffW = Math.floor((width - margin*2) / measuresPerLine);
-
+        const staffW = Math.floor((width - margin * 2) / measuresPerLine);
         let x = margin;
 
-        for (let mi=0; mi<lineMeasures.length; mi++) {
+        for (let mi = 0; mi < lineMeasures.length; mi++) {
           const tokens = lineMeasures[mi];
 
-          const stave = new VF.Stave(x, y, staffW);
+          const stave = new Stave(x, y, staffW);
           if (line === 0 && mi === 0) {
             stave.addClef("treble").addTimeSignature("4/4");
-            // 顯示速度文字
-            stave.setText(`♩ = ${bpm}`, VF.Modifier.Position.ABOVE, { shift_y: -10, shift_x: 10 });
+            stave.setText(`♩ = ${bpm}`, 1, { shift_y: -10, shift_x: 10 }); // 1=ABOVE
           }
           stave.setContext(ctx).draw();
 
-          // 轉 VexFlow notes
-          const vexNotes = [];
-          const ties = [];
-
-          // 若跨小節 tieEnd pending：此 token 列表中的第一個非休止要 tieEnd
-          let pendingTieEnd = measures._pendingTieEnd ? true : false;
-          measures._pendingTieEnd = false;
-
-          for (let ti=0; ti<tokens.length; ti++) {
-            const t = tokens[ti];
+          const vexNotes = tokens.map(t => {
             const dur = t.dur + (t.isRest ? "r" : "");
-            const note = new VF.StaveNote({
-              clef: "treble",
-              keys: ["c/5"],
-              duration: dur
-            });
+            const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: dur });
+            if (t.dots) Dot.buildAndAttach([n], { all: true });
+            return n;
+          });
 
-            if (t.dots) note.addDotToAll();
-            vexNotes.push(note);
+          // 讓 8/16 音符自動連線（更像正式譜）
+          const beams = Beam.generateBeams(vexNotes, {
+            groups: [{ num_beats: 1, beat_value: 4 }] // 4/4 每拍一組
+          });
 
-            if (!t.isRest && pendingTieEnd) {
-              t.tieEnd = true;
-              pendingTieEnd = false;
-            }
-
-            // tie：用 token tieStart/tieEnd 做配對（簡化：只處理跨小節延音）
-          }
-
-          // Voice + Formatter
-          const voice = new VF.Voice({ num_beats: 4, beat_value: 4 });
+          const voice = new Voice({ num_beats: 4, beat_value: 4 });
           voice.addTickables(vexNotes);
 
-          new VF.Formatter().joinVoices([voice]).format([voice], staffW - 30);
+          new Formatter().joinVoices([voice]).format([voice], staffW - 30);
 
           voice.draw(ctx, stave);
-
-          // tie 繪製（跨小節：上一小節最後音 tieStart、下一小節第一音 tieEnd）
-          // 我們在每小節內找 tieStart 或 tieEnd，並在相鄰小節處理：
-          // 這裡簡化：只畫「本小節最後一顆音」->「下一小節第一顆音」的 tie
-          // 因為我們在 buildMeasures 時已確保跨小節才會標記
-          const hasTieStart = tokens.some(t => t.tieStart);
-          if (hasTieStart) {
-            // 本小節最後非休止
-            const fromIdx = (() => {
-              for (let i=vexNotes.length-1; i>=0; i--) {
-                const n = vexNotes[i];
-                if (!n.isRest()) return i;
-              }
-              return -1;
-            })();
-
-            // 下一小節第一非休止（若存在）
-            const nextTokens = lineMeasures[mi+1] || measures[start + mi + 1];
-            if (nextTokens) {
-              // 需要取得下一小節的 vexNote 物件很麻煩（不同小節不同陣列），
-              // 所以我們在這裡採更穩妥：把 tie 改成「同小節內拆分時值」，
-              // 讓 VexFlow 在同一小節畫 tie。跨小節 tie 若要完美，需要保存跨小節 note 引用。
-              // 因此：此版本跨小節 tie 不畫線，但時值仍正確。
-            }
-          }
+          beams.forEach(b => b.setContext(ctx).draw());
 
           x += staffW;
         }
 
         y += staffHeight;
       }
-
-      // 說明（跨小節 tie 的限制）
-      const note = document.createElement("div");
-      note.className = "muted";
-      note.style.marginTop = "10px";
-      note.textContent =
-        "註：節奏時值已正確量化並分小節；若音符跨小節，這個精簡版為避免跨小節物件引用複雜度，可能不畫出跨小節延音線（但時值/小節切分仍是對的）。";
-      container.appendChild(note);
     }
 
     // 初始
-    renderEmptyScore();
+    resetAll();
   </script>
 </body>
 </html>
