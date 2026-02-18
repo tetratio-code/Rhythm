@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王</h1>
+  <h1 style="margin: 0 0 10px;">節奏王2</h1>
 
   <div class="box">
     <div class="row">
@@ -59,11 +59,10 @@
   <!-- VexFlow (ESM) -->
   <script type="module">
     import {
-      Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot
+      Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, Flow
     } from "https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js";
-
-    // 讓非 module 的主程式可以用
-    window.VF_ = { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot };
+    
+    window.VF_ = { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, Flow };
   </script>
 
   <script>
@@ -335,10 +334,9 @@
       renderer.resize(maxWidth, totalH);
       const ctx = renderer.getContext();
     
-      // ---- 拍內 beam：每拍(1/4) = 1024 ticks（在 VexFlow 裡）----
-      // 我們用 ticks 來切拍，避免附點/混合音值把 generateBeams 搞亂
-      const BEAT_TICKS = 1024;         // quarter
-      const BAR_TICKS = BEAT_TICKS*4;  // 4/4
+      const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, Flow } = window.VF_;
+      const BEAT_TICKS = Flow.RESOLUTION / 4; // quarter note ticks (4096)
+      const BAR_TICKS  = Flow.RESOLUTION;     // whole note ticks (16384) in 4/4
     
       function isBeamable(note) {
         // 只連 8/16（含附點八分通常不連）
@@ -351,40 +349,36 @@
       function buildBeamsByBeat(vexNotes) {
         const beams = [];
         let beatPos = 0;
-        let group = [];   // 同一拍內可連的 notes
-    
+        let group = [];
+      
         function flushGroup() {
-          if (group.length >= 2) {
-            beams.push(new Beam(group));
-          }
+          if (group.length >= 2) beams.push(new Beam(group));
           group = [];
         }
-    
+      
         for (const n of vexNotes) {
-          const ticks = n.getTicks().value(); // Fraction
-          // 若跨拍或遇到不可連的，先 flush
-          if (beatPos >= BEAT_TICKS) {
-            beatPos = beatPos % BEAT_TICKS;
+          const ticks = n.getTicks().value();
+      
+          // 如果這顆音符會跨過拍界，先結束上一拍的 group
+          if (beatPos > 0 && beatPos + ticks > BEAT_TICKS) {
             flushGroup();
+            beatPos = 0;
           }
-    
+      
           if (!isBeamable(n)) {
             flushGroup();
           } else {
             group.push(n);
           }
-    
+      
           beatPos += ticks;
-    
-          // 一拍結束也 flush，確保按拍分組
+      
           if (beatPos === BEAT_TICKS) {
             flushGroup();
-          } else if (beatPos > BEAT_TICKS) {
-            // 罕見：音符跨拍（理論上你的拆分已避免）
-            flushGroup();
-            beatPos = beatPos % BEAT_TICKS;
+            beatPos = 0;
           }
         }
+      
         flushGroup();
         return beams;
       }
