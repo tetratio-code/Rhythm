@@ -146,11 +146,8 @@
           
           new Formatter().joinVoices([voice]).formatToStave([voice], stave);
 
-          // --- 重點修正：擴大連槓分組範圍 ---
-          // 將原本的 [new Fraction(1, 4)] 改為 [new Fraction(4, 4)]
-          // 這能確保即使是最後一個 8 分音符，只要在同一小節內都會嘗試與前面連線
           const beams = Beam.generateBeams(vNotes, { 
-            groups: [new Fraction(4, 4)] 
+            groups: [new Fraction(1, 4)] 
           });
 
           voice.draw(ctx, stave);
