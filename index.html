@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.6 - 符尾修正版</title>
+  <title>節奏王 v2.7 - 完美分組修正版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.6</h1>
+  <h1>節奏王 v2.7</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎載入中...</button>
@@ -32,8 +32,8 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Music Notation Refinement Monitor</b>
-    <div id="log">正在修正符尾與符槓衝突...</div>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Final Beaming & Grouping Stability Monitor</b>
+    <div id="log">正在優化最後一個音符的分組行為...</div>
   </div>
 
   <script type="module">
@@ -52,7 +52,7 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    sysLog("VexFlow 5.0 就緒。符尾自動隱形邏輯已套用。");
+    sysLog("VexFlow 5.0 就緒。已修正最後音符分組邏輯。");
     $("btnStart").disabled = false;
     $("btnStart").textContent = "開始錄入";
     $("statusText").textContent = "待機";
@@ -88,7 +88,6 @@
           if (usedInBar >= 16) { measures.push(curMeasure); curMeasure = []; usedInBar = 0; }
         }
       });
-      // 恢復補滿休止符
       if (usedInBar > 0) {
         getDurations(16 - usedInBar, true).forEach(p => curMeasure.push(p));
         measures.push(curMeasure);
@@ -104,8 +103,8 @@
         const TICK_PX = 25; 
         const CONTENT_WIDTH = 16 * TICK_PX; 
         const FIRST_BAR_PADDING = 80; 
-        
         const totalWidth = (measures.length * CONTENT_WIDTH) + FIRST_BAR_PADDING + 100;
+        
         const renderer = new Renderer(container, Renderer.Backends.SVG);
         renderer.resize(totalWidth, 200);
         const ctx = renderer.getContext();
@@ -118,110 +117,4 @@
           const isFirst = (idx === 0);
           const barWidth = CONTENT_WIDTH + (isFirst ? FIRST_BAR_PADDING : 0);
           const stave = new Stave(curX, 40, barWidth);
-          if (isFirst) stave.addClef("treble").addTimeSignature("4/4");
-          stave.setContext(ctx).draw();
-
-          // 1. 建立音符 (F4, Stem Up)
-          const vNotes = measure.map(t => {
-            const n = new StaveNote({ 
-              clef: "treble", 
-              keys: ["f/4"], 
-              duration: t.dur + (t.isRest ? "r" : ""),
-              stem_direction: 1 
-            });
-            if (t.dots) Dot.buildAndAttach([n], { all: true });
-            t.vfNote = n;
-            return n;
-          });
-
-          // 2. 連結線追蹤
-          measure.forEach(token => {
-            if (pendingTieNote && !token.isRest) {
-              allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
-              pendingTieNote = null;
-            }
-            if (token.isTie && !token.isRest) pendingTieNote = token.vfNote;
-          });
-
-          const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
-          voice.addTickables(vNotes);
-          
-          // 3. 格式化排版
-          new Formatter().joinVoices([voice]).formatToStave([voice], stave);
-
-          // 4. 關鍵修正：先產生 Beams，再繪製 Voice
-          // 這樣音符在繪製時會知道自己已被 Beam，從而刪除原有的符尾
-          const notesToBeam = vNotes.filter((n, i) => !measure[i].isRest);
-          const beams = Beam.generateBeams(notesToBeam, { 
-            groups: [new Fraction(1, 4)] 
-          });
-
-          // 5. 繪製音符 (此時音符已標記為 beamed，不會顯示符尾)
-          voice.draw(ctx, stave);
-
-          // 6. 繪製符槓
-          beams.forEach(b => b.setContext(ctx).draw());
-          
-          curX += stave.getWidth();
-        });
-
-        allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`渲染成功：已消除重複顯示的符尾。`);
-      } catch (e) {
-        sysLog("渲染錯誤: " + e.message, true);
-      }
-    }
-
-    $("btnStart").onclick = () => {
-      isRecording = true; times = []; lastKeyTime = -1;
-      $("btnStart").disabled = true; $("btnStop").disabled = false;
-      $("statusText").textContent = "錄入中...";
-      $("statusText").className = "status-active";
-      sysLog("開始錄入...");
-    };
-
-    const stopRecording = () => {
-      isRecording = false;
-      $("btnStart").disabled = false; $("btnStop").disabled = true;
-      $("statusText").className = "";
-      if (times.length < 1) return;
-      
-      const itvs = [];
-      for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
-      const min = itvs.length > 0 ? Math.min(...itvs) : 250; 
-      let bestU = min, bestS = Infinity;
-      for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
-        let err = itvs.reduce((a, x) => a + Math.abs(x - Math.max(1, Math.round(x/u))*u), 0);
-        let s = itvs.length > 0 ? err/u : 0;
-        if (s < bestS) { bestS = s; bestU = u; }
-      }
-      const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
-
-      // 自動補滿當下 4 分音符空缺
-      const totalUnitsSoFar = q.reduce((sum, val) => sum + val, 0);
-      const unitsInCurrentBeat = totalUnitsSoFar % 4;
-      const fillUnits = 4 - unitsInCurrentBeat; 
-      q.push(fillUnits);
-
-      const bpm = Math.round(60000 / (bestU * 4));
-      $("bpmText").textContent = bpm;
-      $("statusText").textContent = "完成";
-      renderScore(buildMeasures(q), bpm);
-    };
-
-    $("btnStop").onclick = stopRecording;
-    $("btnReset").onclick = () => location.reload();
-
-    document.onkeydown = (e) => {
-      if (!isRecording) return;
-      if (e.code === "Space") { e.preventDefault(); stopRecording(); return; }
-      const now = performance.now();
-      if (lastKeyTime > 0 && (now - lastKeyTime) < DEBOUNCE) return;
-      lastKeyTime = now;
-      times.push(now);
-      $("noteCount").textContent = times.length;
-      sysLog(`偵測音符 ${times.length}`);
-    };
-  </script>
-</body>
-</html>
+          if (isFirst) stave.
