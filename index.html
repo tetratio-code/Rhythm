@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王</h1>
+  <h1 style="margin: 0 0 10px;">節奏王v1.1</h1>
 
   <div class="box">
     <div class="row">
@@ -223,38 +223,46 @@
 
     function buildMeasuresFromQuantized(qUnits) {
       const measures = [];
-      let cur = [];
-      let used = 0;
-
-      function push(token) {
-        cur.push(token);
-        used += token.units;
-        if (used === UNITS_PER_BAR) {
-          measures.push(cur);
-          cur = [];
-          used = 0;
-        }
-      }
-
-      for (let i=0; i<qUnits.length; i++) {
-        let u = qUnits[i];
-        while (u > 0) {
-          const space = UNITS_PER_BAR - used;
-          const take = Math.min(space, u);
-
+      let curMeasure = [];
+      let usedInBar = 0; // 0-16
+    
+      for (let i = 0; i < qUnits.length; i++) {
+        let remain = qUnits[i];
+    
+        while (remain > 0) {
+          const usedInBeat = usedInBar % 4;
+          const spaceInBeat = 4 - usedInBeat; // 當前這拍還剩多少空間
+          const take = Math.min(remain, spaceInBeat);
+    
+          // 將這段空間拆解為標準音符長度
           const parts = splitUnitsToDurations(take, false);
-          parts.forEach(push);
-
-          u -= take;
+          
+          parts.forEach((p, idx) => {
+            // 如果這個音符是因為「跨拍」被切斷的，或者是 parts 內部的分解，標記 isTie
+            // 只有在不是最後一段且 remain 還沒扣完時才需要 Tie
+            const isLastOfParts = (idx === parts.length - 1);
+            p.isTie = (isLastOfParts && (remain > take)); 
+            curMeasure.push(p);
+          });
+    
+          usedInBar += take;
+          remain -= take;
+    
+          if (usedInBar === 16) {
+            measures.push(curMeasure);
+            curMeasure = [];
+            usedInBar = 0;
+          }
         }
       }
-
-      // 補滿最後小節
-      if (used !== 0) {
-        const restUnits = UNITS_PER_BAR - used;
-        splitUnitsToDurations(restUnits, true).forEach(push);
+    
+      // 補滿最後一個小節
+      if (usedInBar !== 0) {
+        const restUnits = 16 - usedInBar;
+        splitUnitsToDurations(restUnits, true).forEach(p => curMeasure.push(p));
+        measures.push(curMeasure);
       }
-
+    
       return measures;
     }
 
@@ -287,39 +295,37 @@
 
     // ======== VexFlow 繪製（使用 window.VF_） ========
     function renderWithVexFlow(measures, bpm) {
-      const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot } = window.VF_;
+      const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = window.VF_;
       const container = document.getElementById("score");
       container.innerHTML = "";
     
-      const margin = 18;
-      const lineStaffHeight = 170;
-      const maxWidth = Math.max(950, Math.min(1500, container.clientWidth || 1100));
+      const margin = 20;
+      const lineStaffHeight = 180;
+      const maxWidth = Math.max(900, Math.min(1400, container.clientWidth || 1000));
     
-      // ---- 先把每小節轉成 vexNotes（保留，後面還要 beam）----
-      const all = measures.map(tokens => {
+      // 1. 預處理：建立所有 VexFlow 音符對象並存回 token 中以便後續連線
+      const allMeasureData = measures.map(tokens => {
         const vexNotes = tokens.map(t => {
           const dur = t.dur + (t.isRest ? "r" : "");
           const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: dur });
           if (t.dots) Dot.buildAndAttach([n], { all: true });
+          t.vfNote = n; // 關鍵：儲存引用
           return n;
         });
-        return { vexNotes };
+        return { tokens, vexNotes };
       });
     
-      // ---- 動態估算每小節需要的寬度：音符越多越寬，避免擠爆 ----
-      // 一個很實用的 heuristic：base + noteCount*factor（再 clamp）
-      function measureWidthFor(vexNotes) {
-        const n = vexNotes.length;
-        return Math.max(180, Math.min(340, 120 + n * 22));
+      // 2. 行分配邏輯 (保留你原本的優良設計)
+      function measureWidthFor(notes) {
+        return Math.max(200, Math.min(400, 140 + notes.length * 25));
       }
     
-      // ---- 行分配：把小節塞進一行，直到超過 maxWidth ----
       const lines = [];
       let curLine = [];
       let curW = margin;
     
-      for (let i = 0; i < all.length; i++) {
-        const w = measureWidthFor(all[i].vexNotes);
+      for (let i = 0; i < allMeasureData.length; i++) {
+        const w = measureWidthFor(allMeasureData[i].vexNotes);
         if (curLine.length > 0 && curW + w > maxWidth - margin) {
           lines.push(curLine);
           curLine = [];
@@ -330,67 +336,14 @@
       }
       if (curLine.length) lines.push(curLine);
     
+      // 3. 繪製
       const totalH = lines.length * lineStaffHeight + margin * 2;
       const renderer = new Renderer(container, Renderer.Backends.SVG);
       renderer.resize(maxWidth, totalH);
       const ctx = renderer.getContext();
-    
-      // ---- 拍內 beam：每拍(1/4) = 1024 ticks（在 VexFlow 裡）----
-      // 我們用 ticks 來切拍，避免附點/混合音值把 generateBeams 搞亂
-      const BEAT_TICKS = 1024;         // quarter
-      const BAR_TICKS = BEAT_TICKS*4;  // 4/4
-    
-      function isBeamable(note) {
-        // 只連 8/16（含附點八分通常不連）
-        // duration 字串例： "8", "16", "8r", "q", "h"...
-        const d = note.getDuration();
-        if (note.isRest && note.isRest()) return false;
-        return (d === "8" || d === "16" || d === "32");
-      }
-    
-      function buildBeamsByBeat(vexNotes) {
-        const beams = [];
-        let beatPos = 0;
-        let group = [];   // 同一拍內可連的 notes
-    
-        function flushGroup() {
-          if (group.length >= 2) {
-            beams.push(new Beam(group));
-          }
-          group = [];
-        }
-    
-        for (const n of vexNotes) {
-          const ticks = n.getTicks().value(); // Fraction
-          // 若跨拍或遇到不可連的，先 flush
-          if (beatPos >= BEAT_TICKS) {
-            beatPos = beatPos % BEAT_TICKS;
-            flushGroup();
-          }
-    
-          if (!isBeamable(n)) {
-            flushGroup();
-          } else {
-            group.push(n);
-          }
-    
-          beatPos += ticks;
-    
-          // 一拍結束也 flush，確保按拍分組
-          if (beatPos === BEAT_TICKS) {
-            flushGroup();
-          } else if (beatPos > BEAT_TICKS) {
-            // 罕見：音符跨拍（理論上你的拆分已避免）
-            flushGroup();
-            beatPos = beatPos % BEAT_TICKS;
-          }
-        }
-        flushGroup();
-        return beams;
-      }
-    
-      // ---- 畫每一行 ----
+      
       let y = margin;
+      let allTies = [];
     
       for (let li = 0; li < lines.length; li++) {
         const line = lines[li];
@@ -398,33 +351,42 @@
     
         for (let mi = 0; mi < line.length; mi++) {
           const { idx, w } = line[mi];
-          const vexNotes = all[idx].vexNotes;
+          const { tokens, vexNotes } = allMeasureData[idx];
     
           const stave = new Stave(x, y, w);
           if (li === 0 && mi === 0) {
             stave.addClef("treble").addTimeSignature("4/4");
-            stave.setText(`♩ = ${bpm}`, 1, { shift_y: -10, shift_x: 10 });
+            stave.setText(`♩ = ${bpm}`, 1, { shift_y: -10, shift_x: 0 });
           }
           stave.setContext(ctx).draw();
     
-          const voice = new Voice({ num_beats: 4, beat_value: 4 });
-          voice.setMode(Voice.Mode.SOFT);
+          const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
           voice.addTickables(vexNotes);
-    
-          new Formatter().joinVoices([voice]).format([voice], w - 30);
-    
-          // 先畫音符
+          new Formatter().joinVoices([voice]).format([voice], w - 50);
           voice.draw(ctx, stave);
     
-          // 再按拍做 beam
-          const beams = buildBeamsByBeat(vexNotes);
+          // 自動產生連槓：設定每 1/4 拍 (Fraction(1,4)) 為一組
+          const beams = Beam.generateBeams(vexNotes, {
+            groups: [new Fraction(1, 4)]
+          });
           beams.forEach(b => b.setContext(ctx).draw());
     
+          // 收集連結線 (Tie)
+          for (let ti = 0; ti < tokens.length; ti++) {
+            if (tokens[ti].isTie && tokens[ti+1]) {
+              allTies.push(new StaveTie({
+                first_note: tokens[ti].vfNote,
+                last_note: tokens[ti+1].vfNote
+              }));
+            }
+          }
           x += w;
         }
-    
         y += lineStaffHeight;
       }
+    
+      // 最後統一畫出所有連結線
+      allTies.forEach(t => t.setContext(ctx).draw());
     }
 
     // 初始
