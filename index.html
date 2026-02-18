@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.4 - 純淨線性版</title>
+  <title>節奏王 v2.5 - 專業記譜版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.4</h1>
+  <h1>節奏王 v2.5</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎載入中...</button>
@@ -32,8 +32,8 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Rhythmic Purity & F4 Octave Monitor</b>
-    <div id="log">正在優化視覺排版...</div>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">F4 Octave & Rest-Fill Diagnostics</b>
+    <div id="log">正在校準 F4 音高與休止符邏輯...</div>
   </div>
 
   <script type="module">
@@ -52,7 +52,7 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    sysLog("VexFlow 5.0 加載。音高調整為 F4。");
+    sysLog("VexFlow 5.0 就緒。已套用 F4 音高與休止符補全。");
     $("btnStart").disabled = false;
     $("btnStart").textContent = "開始錄入";
     $("statusText").textContent = "待機";
@@ -60,12 +60,12 @@
     let isRecording = false, times = [], lastKeyTime = -1;
     const MAX_NOTES = 100, DEBOUNCE = 50;
 
-    function getDurations(units, isRest=false, isGhost=false) {
+    function getDurations(units, isRest=false) {
       const opts = [{u:16, d:"w"}, {u:12, d:"h", dt:1}, {u:8, d:"h"}, {u:6, d:"q", dt:1}, {u:4, d:"q"}, {u:3, d:"8", dt:1}, {u:2, d:"8"}, {u:1, d:"16"}];
       let res = [], rem = units;
       while (rem > 0) {
         let p = opts.find(o => o.u <= rem) || opts[opts.length-1];
-        res.push({ dur: p.d, dots: p.dt || 0, units: p.u, isRest, isGhost });
+        res.push({ dur: p.d, dots: p.dt || 0, units: p.u, isRest });
         rem -= p.u;
       }
       return res;
@@ -79,7 +79,7 @@
         while (rem > 0) {
           let spaceInBeat = 4 - (usedInBar % 4);
           let take = Math.min(rem, spaceInBeat);
-          let parts = getDurations(take, false, false);
+          let parts = getDurations(take, false);
           parts.forEach((p, idx) => {
             p.isTie = (idx < parts.length - 1) || (rem > take);
             curMeasure.push(p);
@@ -88,9 +88,9 @@
           if (usedInBar >= 16) { measures.push(curMeasure); curMeasure = []; usedInBar = 0; }
         }
       });
-      // 核心修正：使用 GhostNote (隱形音符) 補滿最後小節，移除多餘的符頭
+      // 修正：恢復補滿「休止符」的動作，移除無效的符旗
       if (usedInBar > 0) {
-        getDurations(16 - usedInBar, false, true).forEach(p => curMeasure.push(p));
+        getDurations(16 - usedInBar, true).forEach(p => curMeasure.push(p));
         measures.push(curMeasure);
       }
       return measures;
@@ -98,7 +98,7 @@
 
     function renderScore(measures, bpm) {
       try {
-        const { Renderer, Stave, StaveNote, GhostNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
+        const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
         
         const TICK_PX = 25; 
@@ -122,11 +122,7 @@
           stave.setContext(ctx).draw();
 
           const vNotes = measure.map(t => {
-            if (t.isGhost) {
-              // 修正：補位部分改為 GhostNote，完全隱形
-              return new GhostNote({ duration: t.dur });
-            }
-            // 修正點：音高改為 F4，符桿向上
+            // 修正：音高改為 F4 (五線譜第一間)，補齊部分使用標準休止符語法 'r'
             const n = new StaveNote({ 
               clef: "treble", 
               keys: ["f/4"], 
@@ -139,12 +135,11 @@
           });
 
           measure.forEach(token => {
-            if (pendingTieNote && !token.isRest && !token.isGhost) {
-              // 連結線在符桿向上時自動出現在下方
+            if (pendingTieNote && !token.isRest) {
               allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
               pendingTieNote = null;
             }
-            if (token.isTie && !token.isRest && !token.isGhost) pendingTieNote = token.vfNote;
+            if (token.isTie && !token.isRest) pendingTieNote = token.vfNote;
           });
 
           const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
@@ -152,16 +147,16 @@
           new Formatter().joinVoices([voice]).formatToStave([voice], stave);
           voice.draw(ctx, stave);
 
-          const beams = Beam.generateBeams(vNotes.filter(n => n.getCategory() !== "ghostnotes"), { 
-            groups: [new Fraction(1, 4)] 
-          });
+          // 修正：連槓只作用於音符，過濾掉休止符以移除「尾巴」線條
+          const notesToBeam = vNotes.filter((n, i) => !measure[i].isRest);
+          const beams = Beam.generateBeams(notesToBeam, { groups: [new Fraction(1, 4)] });
           beams.forEach(b => b.setContext(ctx).draw());
           
           curX += stave.getWidth();
         });
 
         allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`成功移除多餘符頭。音高：F4。排版：線性等比。`);
+        sysLog(`渲染成功：移除符旗尾巴並恢復休止符。`);
       } catch (e) {
         sysLog("渲染錯誤: " + e.message, true);
       }
@@ -194,7 +189,7 @@
 
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
 
-      // 自動補滿拍子邏輯
+      // 修正：最後一個音自動補滿當下 4 分音符的空缺
       const totalUnitsSoFar = q.reduce((sum, val) => sum + val, 0);
       const unitsInCurrentBeat = totalUnitsSoFar % 4;
       const fillUnits = 4 - unitsInCurrentBeat; 
@@ -203,7 +198,7 @@
       const bpm = Math.round(60000 / (bestU * 4));
       $("bpmText").textContent = bpm;
       $("statusText").textContent = "完成";
-      sysLog(`分析完成。補滿最後音符: ${fillUnits} 單位。`);
+      sysLog(`分析完成。補滿最後音符長度並填充休止符。`);
       renderScore(buildMeasures(q), bpm);
     };
 
