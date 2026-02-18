@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>節奏王</title>
+  <title>節奏王 v1.2</title>
   <style>
     :root { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", Arial, sans-serif; }
     body { margin: 18px; line-height: 1.45; }
@@ -14,13 +14,13 @@
     .box { border: 1px solid #e5e5e5; border-radius: 12px; padding: 12px 14px; }
     #status { font-weight: 700; }
     #log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
-    #score { overflow-x: auto; }
+    #score { overflow-x: auto; background: #fff; }
     .warn { color: #b45309; }
     .ok { color: #15803d; }
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王v1.1</h1>
+  <h1 style="margin: 0 0 10px;">節奏王 v1.2</h1>
 
   <div class="box">
     <div class="row">
@@ -31,16 +31,14 @@
       <span class="pill">音符數：<span id="noteCount">0</span>/100</span>
       <span class="pill">防連點：<span id="debounce">50</span>ms</span>
     </div>
-
     <p style="margin: 10px 0 0;" class="muted">
-      操作：按「開始錄入」後，鍵盤任意鍵敲出節奏；按 <b>Space</b> 結束。<br>
-      量化：自動估計最貼近的基本時值（以 <b>16 分音符</b>為最小單位），並輸出接近正式五線譜的節奏記譜（單一音高代表節奏）。
+      操作：按「開始錄入」後，敲擊任意鍵錄入節奏；按 <b>Space</b> 結束。系統會自動以四分音符為基準進行分組與連結。
     </p>
   </div>
 
   <div class="row" style="margin-top: 12px;">
-    <span class="pill">推估基本單位：<b id="unitMs">—</b> ms（≈16分）</span>
-    <span class="pill">推估速度：<b id="bpm">—</b> BPM（♩=）</span>
+    <span class="pill">推估基本單位：<b id="unitMs">—</b> ms</span>
+    <span class="pill">推估速度：<b id="bpm">—</b> BPM</span>
     <span class="pill">誤差指標：<b id="fit">—</b></span>
   </div>
 
@@ -49,348 +47,95 @@
   </div>
 
   <div class="box" style="margin-top: 12px;">
-    <div class="row" style="justify-content: space-between;">
-      <b>Debug / 量化結果</b>
-      <span class="muted">（顯示每段間隔、量化後以 16分為單位）</span>
-    </div>
+    <b>Debug / 量化結果</b>
     <div id="log" style="margin-top: 8px;"></div>
   </div>
 
-  <!-- VexFlow (ESM) -->
   <script type="module">
     import {
-      Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot
+      Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction
     } from "https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js";
-
-    // 讓非 module 的主程式可以用
-    window.VF_ = { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot };
+    window.VF_ = { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction };
   </script>
 
   <script>
-    // ======== 錄入與資料 ========
     const MAX_NOTES = 100;
     const DEBOUNCE_MS = 50;
-
-    let isRecording = false;
-    let times = [];     // keydown timestamps (ms)
-    let intervals = []; // IOI in ms between key presses
-    let lastKeyTime = -1;
-
+    let isRecording = false, times = [], lastKeyTime = -1;
     const $ = (id) => document.getElementById(id);
 
-    function setStatus(text, cls="muted") {
-      const el = $("status");
-      el.textContent = text;
-      el.className = cls;
-    }
-
-    function renderEmptyScore(msg="尚未輸入節奏。") {
-      const el = $("score");
-      el.innerHTML = "";
-      const p = document.createElement("div");
-      p.className = "muted";
-      p.textContent = msg;
-      el.appendChild(p);
-    }
+    function setStatus(text, cls="muted") { $("status").textContent = text; $("status").className = cls; }
+    function renderEmptyScore(msg="尚未輸入節奏。") { $("score").innerHTML = `<div class="muted">${msg}</div>`; }
 
     function resetAll() {
-      isRecording = false;
-      times = [];
-      intervals = [];
-      lastKeyTime = -1;
-      $("noteCount").textContent = "0";
-      $("unitMs").textContent = "—";
-      $("bpm").textContent = "—";
-      $("fit").textContent = "—";
-      $("log").textContent = "";
-      $("btnStart").disabled = false;
-      $("btnStop").disabled = true;
-      setStatus("待機", "muted");
-      renderEmptyScore();
+      isRecording = false; times = []; lastKeyTime = -1;
+      $("noteCount").textContent = "0"; $("unitMs").textContent = "—"; $("bpm").textContent = "—";
+      $("fit").textContent = "—"; $("log").textContent = "";
+      $("btnStart").disabled = false; $("btnStop").disabled = true;
+      setStatus("待機"); renderEmptyScore();
     }
 
     function startRecording() {
-      // 不要 resetAll() 因為會把畫面清掉又變成「尚未輸入」；
-      // 但我們確實要清資料
-      isRecording = true;
-      times = [];
-      intervals = [];
-      lastKeyTime = -1;
-
-      $("noteCount").textContent = "0";
-      $("btnStart").disabled = true;
-      $("btnStop").disabled = false;
-      setStatus("錄入中（Space 結束）", "ok");
-      renderEmptyScore("錄入中…（按 Space 結束）");
+      isRecording = true; times = []; lastKeyTime = -1;
+      $("noteCount").textContent = "0"; $("btnStart").disabled = true; $("btnStop").disabled = false;
+      setStatus("錄入中", "ok"); renderEmptyScore("錄入中…（Space 結束）");
     }
 
     function stopRecording() {
-      if (!isRecording) return;
-      isRecording = false;
-
-      $("btnStart").disabled = false;
-      $("btnStop").disabled = true;
-
-      if (times.length < 2) {
-        setStatus("已停止（資料不足）", "warn");
-        renderEmptyScore("資料不足：至少要敲兩次鍵才能分析間隔。");
-        return;
-      }
-
-      intervals = [];
+      if (!isRecording || times.length < 2) { resetAll(); return; }
+      isRecording = false; $("btnStart").disabled = false; $("btnStop").disabled = true;
+      let intervals = [];
       for (let i=1; i<times.length; i++) intervals.push(times[i] - times[i-1]);
-
       analyzeAndRender(intervals);
       setStatus("已輸出五線譜", "ok");
     }
 
     document.addEventListener("keydown", (e) => {
       if (!isRecording) return;
-
-      if (e.code === "Space") {
-        e.preventDefault();
-        stopRecording();
-        return;
-      }
-
+      if (e.code === "Space") { e.preventDefault(); stopRecording(); return; }
       const now = performance.now();
       if (lastKeyTime >= 0 && (now - lastKeyTime) < DEBOUNCE_MS) return;
       lastKeyTime = now;
-
-      if (times.length >= MAX_NOTES) {
-        stopRecording();
-        return;
-      }
-
-      times.push(now);
-      $("noteCount").textContent = String(times.length);
+      if (times.length < MAX_NOTES) { times.push(now); $("noteCount").textContent = times.length; }
     });
 
-    $("btnStart").addEventListener("click", startRecording);
-    $("btnStop").addEventListener("click", stopRecording);
-    $("btnReset").addEventListener("click", resetAll);
-    $("debounce").textContent = String(DEBOUNCE_MS);
+    $("btnStart").onclick = startRecording;
+    $("btnStop").onclick = stopRecording;
+    $("btnReset").onclick = resetAll;
 
-    // ======== 分析：估計基本單位(≈16分)並量化 ========
     function estimateUnitMs(intervals) {
       const minItv = Math.min(...intervals);
-      const start = Math.max(40, Math.floor(0.5 * minItv));
-      const end   = Math.max(start+1, Math.floor(2.2 * minItv));
-
       let best = { unit: Math.round(minItv), score: Infinity };
-
-      for (let u = start; u <= end; u++) {
+      for (let u = Math.max(40, minItv*0.5); u <= minItv*2.2; u++) {
         let err = 0;
-        for (const x of intervals) {
-          const k = Math.max(1, Math.round(x / u));
-          const q = k * u;
-          err += Math.abs(x - q);
-        }
-        const score = err / (u * intervals.length);
-        if (score < best.score) best = { unit: u, score };
+        intervals.forEach(x => { err += Math.abs(x - Math.max(1, Math.round(x/u))*u); });
+        let s = err / (u * intervals.length);
+        if (s < best.score) best = { unit: u, score: s };
       }
       return best;
     }
 
-    function quantizeIntervalsTo16th(intervals, unitMs) {
-      return intervals.map(x => Math.max(1, Math.round(x / unitMs)));
-    }
-
-    // ======== 記譜：將 16分單位數轉成音符/休止 ========
-    const UNITS_PER_BAR = 16;
-
     function splitUnitsToDurations(units, isRest=false) {
-      const options = [
-        {units: 16, dur: "w",  dots: 0},
-        {units: 12, dur: "h",  dots: 1},
-        {units: 8,  dur: "h",  dots: 0},
-        {units: 6,  dur: "q",  dots: 1},
-        {units: 4,  dur: "q",  dots: 0},
-        {units: 3,  dur: "8",  dots: 1},
-        {units: 2,  dur: "8",  dots: 0},
-        {units: 1,  dur: "16", dots: 0},
+      const opt = [
+        {u:16, d:"w", dt:0}, {u:12, d:"h", dt:1}, {u:8, d:"h", dt:0},
+        {u:6, d:"q", dt:1}, {u:4, d:"q", dt:0}, {u:3, d:"8", dt:1},
+        {u:2, d:"8", dt:0}, {u:1, d:"16", dt:0}
       ];
-
-      const out = [];
-      let remain = units;
-      while (remain > 0) {
-        const pick = options.find(o => o.units <= remain) || options[options.length-1];
-        out.push({ ...pick, isRest });
-        remain -= pick.units;
+      let res = [], rem = units;
+      while (rem > 0) {
+        let p = opt.find(o => o.u <= rem) || opt[opt.length-1];
+        res.push({ dur: p.d, dots: p.dt, units: p.u, isRest });
+        rem -= p.u;
       }
-      return out;
+      return res;
     }
 
     function buildMeasuresFromQuantized(qUnits) {
       const measures = [];
-      let curMeasure = [];
-      let usedInBar = 0; // 0-16
-    
-      for (let i = 0; i < qUnits.length; i++) {
-        let remain = qUnits[i];
-    
-        while (remain > 0) {
-          const usedInBeat = usedInBar % 4;
-          const spaceInBeat = 4 - usedInBeat; // 當前這拍還剩多少空間
-          const take = Math.min(remain, spaceInBeat);
-    
-          // 將這段空間拆解為標準音符長度
-          const parts = splitUnitsToDurations(take, false);
-          
-          parts.forEach((p, idx) => {
-            // 如果這個音符是因為「跨拍」被切斷的，或者是 parts 內部的分解，標記 isTie
-            // 只有在不是最後一段且 remain 還沒扣完時才需要 Tie
-            const isLastOfParts = (idx === parts.length - 1);
-            p.isTie = (isLastOfParts && (remain > take)); 
-            curMeasure.push(p);
-          });
-    
-          usedInBar += take;
-          remain -= take;
-    
-          if (usedInBar === 16) {
-            measures.push(curMeasure);
-            curMeasure = [];
-            usedInBar = 0;
-          }
-        }
-      }
-    
-      // 補滿最後一個小節
-      if (usedInBar !== 0) {
-        const restUnits = 16 - usedInBar;
-        splitUnitsToDurations(restUnits, true).forEach(p => curMeasure.push(p));
-        measures.push(curMeasure);
-      }
-    
-      return measures;
-    }
-
-    function analyzeAndRender(intervals) {
-      // 等 VexFlow module 把 VF_ 掛好（避免極少數載入競速）
-      if (!window.VF_) {
-        setTimeout(() => analyzeAndRender(intervals), 50);
-        return;
-      }
-
-      const est = estimateUnitMs(intervals);
-      const unitMs = est.unit;
-      const score = est.score;
-
-      const q = quantizeIntervalsTo16th(intervals, unitMs);
-      const bpm = 60000 / (unitMs * 4);
-
-      $("unitMs").textContent = String(unitMs);
-      $("bpm").textContent = String(Math.round(bpm));
-      $("fit").textContent = score.toFixed(4);
-
-      const rawLine = intervals.map(x=>x.toFixed(1)).join(", ");
-      const qLine = q.join(", ");
-      $("log").textContent =
-        `raw intervals (ms):\n${rawLine}\n\nquantized (16th units):\n${qLine}\n\nbars: 4/4, 16 units per bar`;
-
-      const measures = buildMeasuresFromQuantized(q);
-      renderWithVexFlow(measures, Math.round(bpm));
-    }
-
-    // ======== VexFlow 繪製（使用 window.VF_） ========
-    function renderWithVexFlow(measures, bpm) {
-      const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = window.VF_;
-      const container = document.getElementById("score");
-      container.innerHTML = "";
-    
-      const margin = 20;
-      const lineStaffHeight = 180;
-      const maxWidth = Math.max(900, Math.min(1400, container.clientWidth || 1000));
-    
-      // 1. 預處理：建立所有 VexFlow 音符對象並存回 token 中以便後續連線
-      const allMeasureData = measures.map(tokens => {
-        const vexNotes = tokens.map(t => {
-          const dur = t.dur + (t.isRest ? "r" : "");
-          const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: dur });
-          if (t.dots) Dot.buildAndAttach([n], { all: true });
-          t.vfNote = n; // 關鍵：儲存引用
-          return n;
-        });
-        return { tokens, vexNotes };
-      });
-    
-      // 2. 行分配邏輯 (保留你原本的優良設計)
-      function measureWidthFor(notes) {
-        return Math.max(200, Math.min(400, 140 + notes.length * 25));
-      }
-    
-      const lines = [];
-      let curLine = [];
-      let curW = margin;
-    
-      for (let i = 0; i < allMeasureData.length; i++) {
-        const w = measureWidthFor(allMeasureData[i].vexNotes);
-        if (curLine.length > 0 && curW + w > maxWidth - margin) {
-          lines.push(curLine);
-          curLine = [];
-          curW = margin;
-        }
-        curLine.push({ idx: i, w });
-        curW += w;
-      }
-      if (curLine.length) lines.push(curLine);
-    
-      // 3. 繪製
-      const totalH = lines.length * lineStaffHeight + margin * 2;
-      const renderer = new Renderer(container, Renderer.Backends.SVG);
-      renderer.resize(maxWidth, totalH);
-      const ctx = renderer.getContext();
-      
-      let y = margin;
-      let allTies = [];
-    
-      for (let li = 0; li < lines.length; li++) {
-        const line = lines[li];
-        let x = margin;
-    
-        for (let mi = 0; mi < line.length; mi++) {
-          const { idx, w } = line[mi];
-          const { tokens, vexNotes } = allMeasureData[idx];
-    
-          const stave = new Stave(x, y, w);
-          if (li === 0 && mi === 0) {
-            stave.addClef("treble").addTimeSignature("4/4");
-            stave.setText(`♩ = ${bpm}`, 1, { shift_y: -10, shift_x: 0 });
-          }
-          stave.setContext(ctx).draw();
-    
-          const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
-          voice.addTickables(vexNotes);
-          new Formatter().joinVoices([voice]).format([voice], w - 50);
-          voice.draw(ctx, stave);
-    
-          // 自動產生連槓：設定每 1/4 拍 (Fraction(1,4)) 為一組
-          const beams = Beam.generateBeams(vexNotes, {
-            groups: [new Fraction(1, 4)]
-          });
-          beams.forEach(b => b.setContext(ctx).draw());
-    
-          // 收集連結線 (Tie)
-          for (let ti = 0; ti < tokens.length; ti++) {
-            if (tokens[ti].isTie && tokens[ti+1]) {
-              allTies.push(new StaveTie({
-                first_note: tokens[ti].vfNote,
-                last_note: tokens[ti+1].vfNote
-              }));
-            }
-          }
-          x += w;
-        }
-        y += lineStaffHeight;
-      }
-    
-      // 最後統一畫出所有連結線
-      allTies.forEach(t => t.setContext(ctx).draw());
-    }
-
-    // 初始
-    resetAll();
-  </script>
-</body>
-</html>
+      let cur = [], usedInBar = 0;
+      qUnits.forEach(u => {
+        let rem = u;
+        while (rem > 0) {
+          let spaceInBeat = 4 - (usedInBar % 4);
+          let take = Math.min(rem, spaceInBeat);
+          let parts
