@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.3 - 專業記譜版</title>
+  <title>節奏王 v2.4 - 純淨線性版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.3</h1>
+  <h1>節奏王 v2.4</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎載入中...</button>
@@ -32,8 +32,8 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Professional Notation & Auto-Fill Monitor</b>
-    <div id="log">正在初始化記譜引擎...</div>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Rhythmic Purity & F4 Octave Monitor</b>
+    <div id="log">正在優化視覺排版...</div>
   </div>
 
   <script type="module">
@@ -52,7 +52,7 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    sysLog("VexFlow 5.0 載入成功。");
+    sysLog("VexFlow 5.0 加載。音高調整為 F4。");
     $("btnStart").disabled = false;
     $("btnStart").textContent = "開始錄入";
     $("statusText").textContent = "待機";
@@ -60,12 +60,12 @@
     let isRecording = false, times = [], lastKeyTime = -1;
     const MAX_NOTES = 100, DEBOUNCE = 50;
 
-    function getDurations(units, isRest=false) {
+    function getDurations(units, isRest=false, isGhost=false) {
       const opts = [{u:16, d:"w"}, {u:12, d:"h", dt:1}, {u:8, d:"h"}, {u:6, d:"q", dt:1}, {u:4, d:"q"}, {u:3, d:"8", dt:1}, {u:2, d:"8"}, {u:1, d:"16"}];
       let res = [], rem = units;
       while (rem > 0) {
         let p = opts.find(o => o.u <= rem) || opts[opts.length-1];
-        res.push({ dur: p.d, dots: p.dt || 0, units: p.u, isRest });
+        res.push({ dur: p.d, dots: p.dt || 0, units: p.u, isRest, isGhost });
         rem -= p.u;
       }
       return res;
@@ -79,7 +79,7 @@
         while (rem > 0) {
           let spaceInBeat = 4 - (usedInBar % 4);
           let take = Math.min(rem, spaceInBeat);
-          let parts = getDurations(take, false);
+          let parts = getDurations(take, false, false);
           parts.forEach((p, idx) => {
             p.isTie = (idx < parts.length - 1) || (rem > take);
             curMeasure.push(p);
@@ -88,8 +88,9 @@
           if (usedInBar >= 16) { measures.push(curMeasure); curMeasure = []; usedInBar = 0; }
         }
       });
+      // 核心修正：使用 GhostNote (隱形音符) 補滿最後小節，移除多餘的符頭
       if (usedInBar > 0) {
-        getDurations(16 - usedInBar, true).forEach(p => curMeasure.push(p));
+        getDurations(16 - usedInBar, false, true).forEach(p => curMeasure.push(p));
         measures.push(curMeasure);
       }
       return measures;
@@ -97,7 +98,7 @@
 
     function renderScore(measures, bpm) {
       try {
-        const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
+        const { Renderer, Stave, StaveNote, GhostNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
         
         const TICK_PX = 25; 
@@ -121,10 +122,14 @@
           stave.setContext(ctx).draw();
 
           const vNotes = measure.map(t => {
-            // 修改點 1: 音符改為 F/5，強制符桿向上 (stem_direction: 1)
+            if (t.isGhost) {
+              // 修正：補位部分改為 GhostNote，完全隱形
+              return new GhostNote({ duration: t.dur });
+            }
+            // 修正點：音高改為 F4，符桿向上
             const n = new StaveNote({ 
               clef: "treble", 
-              keys: ["f/5"], 
+              keys: ["f/4"], 
               duration: t.dur + (t.isRest ? "r" : ""),
               stem_direction: 1 
             });
@@ -134,12 +139,12 @@
           });
 
           measure.forEach(token => {
-            if (pendingTieNote && !token.isRest) {
-              // 修改點 2: 連結線在符桿向上的情況下會自動在下方，確保對應 VexFlow 5 語法
+            if (pendingTieNote && !token.isRest && !token.isGhost) {
+              // 連結線在符桿向上時自動出現在下方
               allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
               pendingTieNote = null;
             }
-            if (token.isTie && !token.isRest) pendingTieNote = token.vfNote;
+            if (token.isTie && !token.isRest && !token.isGhost) pendingTieNote = token.vfNote;
           });
 
           const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
@@ -147,15 +152,16 @@
           new Formatter().joinVoices([voice]).formatToStave([voice], stave);
           voice.draw(ctx, stave);
 
-          // 修改點 3: 橫桿 (Beam) 在上方是符桿向上時的預設行為
-          const beams = Beam.generateBeams(vNotes, { groups: [new Fraction(1, 4)] });
+          const beams = Beam.generateBeams(vNotes.filter(n => n.getCategory() !== "ghostnotes"), { 
+            groups: [new Fraction(1, 4)] 
+          });
           beams.forEach(b => b.setContext(ctx).draw());
           
           curX += stave.getWidth();
         });
 
         allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`渲染完成。音高: F5，符桿向上，自動補滿拍子。`);
+        sysLog(`成功移除多餘符頭。音高：F4。排版：線性等比。`);
       } catch (e) {
         sysLog("渲染錯誤: " + e.message, true);
       }
@@ -180,10 +186,7 @@
       
       const min = itvs.length > 0 ? Math.min(...itvs) : 250; 
       let bestU = min, bestS = Infinity;
-      const startU = Math.max(40, min*0.5);
-      const endU = min*2.2;
-
-      for (let u = startU; u <= endU; u++) {
+      for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
         let err = itvs.reduce((a, x) => a + Math.abs(x - Math.max(1, Math.round(x/u))*u), 0);
         let s = itvs.length > 0 ? err/u : 0;
         if (s < bestS) { bestS = s; bestU = u; }
@@ -191,11 +194,10 @@
 
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
 
-      // 修改點 4: 最後一個音不看時間差，改為「自動補滿當下 4 分音符空缺」
-      // 計算目前已使用的總單位量 (16 分音符為 1 單位)
+      // 自動補滿拍子邏輯
       const totalUnitsSoFar = q.reduce((sum, val) => sum + val, 0);
       const unitsInCurrentBeat = totalUnitsSoFar % 4;
-      const fillUnits = 4 - unitsInCurrentBeat; // 補滿到下一個拍子開頭
+      const fillUnits = 4 - unitsInCurrentBeat; 
       q.push(fillUnits);
 
       const bpm = Math.round(60000 / (bestU * 4));
