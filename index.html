@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v1.8 - 連結線修復版</title>
+  <title>節奏王 v1.9 - 線性排版版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v1.8</h1>
+  <h1>節奏王 v1.9</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎加載中...</button>
@@ -32,7 +32,7 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Tie & Beaming Stability Monitor</b>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Proportional Layout Diagnostics</b>
     <div id="log">系統啟動中...</div>
   </div>
 
@@ -60,7 +60,7 @@
         $("btnStart").disabled = false;
         $("btnStart").textContent = "開始錄入";
         $("statusText").textContent = "待機";
-        sysLog("VexFlow 5.0 引擎就緒。已修正連結線參數命名。");
+        sysLog("VexFlow 5.0 就緒。線性排版模式已啟動。");
       } catch (err) {
         sysLog("引擎加載失敗。", true);
       }
@@ -87,7 +87,6 @@
           let take = Math.min(rem, spaceInBeat);
           let parts = getDurations(take, false);
           parts.forEach((p, idx) => {
-            // 標記連結線：如果是內部分解或是未完待續 (跨拍子/小節)
             p.isTie = (idx < parts.length - 1) || (rem > take);
             curMeasure.push(p);
           });
@@ -108,22 +107,28 @@
         const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
         
-        const measureWidth = 260;
-        const totalWidth = Math.min(window.innerWidth - 80, measures.length * measureWidth + 100);
+        // --- 排版修正邏輯 ---
+        const UNIT_WIDTH = 25; // 每個 16 分音符的基本寬度（像素）
+        const STAVE_PADDING = 80; // 用於存放譜號、拍號、小節線的額外空間
+        const measureWidth = (16 * UNIT_WIDTH) + STAVE_PADDING; // 固定小節寬度
+        
+        const totalWidth = measures.length * measureWidth + 50;
         const renderer = new Renderer(container, Renderer.Backends.SVG);
         renderer.resize(totalWidth, 180);
         const ctx = renderer.getContext();
         
         let x = 10;
         let allTies = [];
-        let pendingTieNote = null; // 用於跨小節連結追蹤
+        let pendingTieNote = null;
 
         measures.forEach((measure, idx) => {
           const stave = new Stave(x, 40, measureWidth);
-          if (idx === 0) stave.addClef("treble").addTimeSignature("4/4").setText(`♩ = ${bpm}`, 1, { shift_y: -10 });
+          if (idx === 0) {
+            stave.addClef("treble").addTimeSignature("4/4");
+            stave.setText(`♩ = ${bpm}`, 1, { shift_y: -10 });
+          }
           stave.setContext(ctx).draw();
 
-          // 1. 產生音符並保存引用
           const vNotes = measure.map(t => {
             const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: t.dur + (t.isRest ? "r" : "") });
             if (t.dots) Dot.buildAndAttach([n], { all: true });
@@ -131,28 +136,22 @@
             return n;
           });
 
-          // 2. 連結線邏輯修正：使用繼承追蹤法
           measure.forEach(token => {
-            // 如果前一個音符有 Tie 標記，且當前音符不是休止符
             if (pendingTieNote && !token.isRest) {
-              allTies.push(new StaveTie({
-                firstNote: pendingTieNote,  // 修正為 VexFlow 5 命名的 camelCase
-                lastNote: token.vfNote
-              }));
+              allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
               pendingTieNote = null;
             }
-            // 如果當前音符需要向後連結
-            if (token.isTie && !token.isRest) {
-              pendingTieNote = token.vfNote;
-            }
+            if (token.isTie && !token.isRest) pendingTieNote = token.vfNote;
           });
 
           const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
           voice.addTickables(vNotes);
-          new Formatter().joinVoices([voice]).format([voice], measureWidth - 50);
+          
+          // 強制線性排版：格式化寬度剛好等於我們設定的比例寬度
+          // 這裡減去 STAVE_PADDING 是為了排除譜號佔用的固定寬，讓音符純粹按比例分佈
+          new Formatter().joinVoices([voice]).format([voice], measureWidth - STAVE_PADDING);
           voice.draw(ctx, stave);
 
-          // 3. 強制分組 Beaming
           const beams = Beam.generateBeams(vNotes, { groups: [new Fraction(1, 4)] });
           beams.forEach(b => b.setContext(ctx).draw());
           
@@ -160,10 +159,9 @@
         });
 
         allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`成功渲染並修復連結線參數。`);
+        sysLog(`成功渲染。線性比例：${UNIT_WIDTH}px/16th。`);
       } catch (e) {
         sysLog("渲染錯誤: " + e.message, true);
-        console.error(e);
       }
     }
 
@@ -172,7 +170,6 @@
       $("btnStart").disabled = true; $("btnStop").disabled = false;
       $("statusText").textContent = "錄入中...";
       $("statusText").className = "status-active";
-      $("score").innerHTML = "正在捕捉節奏...";
       sysLog("開始錄入...");
     };
 
@@ -180,7 +177,7 @@
       isRecording = false;
       $("btnStart").disabled = false; $("btnStop").disabled = true;
       $("statusText").className = "";
-      if (times.length < 2) return sysLog("音符不足", true);
+      if (times.length < 2) return;
       
       const itvs = [];
       for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
@@ -193,7 +190,7 @@
       const bpm = Math.round(60000 / (bestU * 4));
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
       $("bpmText").textContent = bpm;
-      $("statusText").textContent = "完成分析";
+      $("statusText").textContent = "完成";
       renderScore(buildMeasures(q), bpm);
     };
 
