@@ -2,36 +2,37 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v1.6 - 分組強化版</title>
+  <title>節奏王 v1.7 - 穩定排版版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
-    body { margin: 18px; line-height: 1.45; background-color: #f9f9f9; }
-    .box { border: 1px solid #e5e5e5; border-radius: 12px; padding: 14px; background: white; margin-bottom: 12px; }
-    button { padding: 10px 14px; cursor: pointer; border-radius: 6px; border: 1px solid #ccc; font-weight: bold; transition: all 0.2s; }
-    button:hover:not(:disabled) { background: #eee; }
+    body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
+    .box { border: 1px solid #ddd; border-radius: 12px; padding: 15px; background: white; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    button { padding: 10px 18px; cursor: pointer; border-radius: 6px; border: 1px solid #bbb; font-weight: bold; transition: 0.2s; }
+    button:hover:not(:disabled) { background: #f0f0f0; border-color: #888; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
-    #log { font-family: ui-monospace, monospace; font-size: 11px; background: #1a1a1a; color: #4af626; padding: 10px; border-radius: 6px; height: 130px; overflow-y: auto; box-shadow: inset 0 0 10px #000; }
-    #score { overflow-x: auto; background: white; border: 1px solid #eee; min-height: 180px; display: flex; align-items: center; padding: 15px; border-radius: 8px; }
-    .pill { padding: 5px 12px; border-radius: 999px; background: #ececec; font-size: 13px; margin-right: 8px; font-weight: 500; }
-    .status-ok { color: #15803d; }
+    #log { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; background: #1e1e1e; color: #50fa7b; padding: 12px; border-radius: 8px; height: 140px; overflow-y: auto; line-height: 1.5; }
+    #score { overflow-x: auto; background: white; border: 1px solid #ddd; min-height: 180px; padding: 20px; border-radius: 12px; }
+    .pill { padding: 6px 12px; border-radius: 999px; background: #e9ecef; font-size: 13px; margin-right: 8px; font-weight: 600; color: #495057; }
+    .status-active { color: #d9480f; animation: blink 1s infinite; }
+    @keyframes blink { 50% { opacity: 0.5; } }
   </style>
 </head>
 <body>
-  <h1>節奏王 v1.6</h1>
+  <h1>節奏王 v1.7</h1>
 
   <div class="box">
-    <button id="btnStart" disabled>載入中...</button>
+    <button id="btnStart" disabled>引擎加載中...</button>
     <button id="btnStop" disabled>Space 結束</button>
     <button id="btnReset">重置系統</button>
-    <span class="pill">狀態：<b id="statusText">正在初始化...</b></span>
+    <span class="pill">狀態：<b id="statusText">初始化...</b></span>
     <span class="pill">音符：<b id="noteCount">0</b></span>
     <span class="pill">速度：<b id="bpmText">—</b> BPM</span>
   </div>
 
   <div id="score"></div>
 
-  <div class="box" style="background: #222;">
-    <b style="color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;">System Diagnostics & Music Engine</b>
+  <div class="box" style="background: #282a36; border: none;">
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Engine Monitor & Diagnostics</b>
     <div id="log">系統啟動中...</div>
   </div>
 
@@ -40,43 +41,33 @@
     const logEl = $("log");
     
     function sysLog(msg, isError = false) {
-      const time = new Date().toLocaleTimeString();
+      const time = new Date().toLocaleTimeString([], {hour12:false});
       const div = document.createElement("div");
-      div.style.color = isError ? "#ff6b6b" : "#4af626";
+      div.style.color = isError ? "#ff5555" : "#50fa7b";
       div.textContent = `[${time}] ${msg}`;
       logEl.appendChild(div);
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // --- 核心變數 ---
     let VF = null;
     let isRecording = false, times = [], lastKeyTime = -1;
     const MAX_NOTES = 100, DEBOUNCE = 50;
 
-    // --- 介面預初始化：先讓按鈕可用，不等待載入 ---
-    function initUI() {
-      $("btnReset").onclick = () => location.reload();
-      sysLog("介面初始化完成，正在請求 VexFlow 引擎...");
-    }
-
-    // --- 異步載入引擎 ---
-    async function loadEngine() {
+    // --- 異步加載 VexFlow ---
+    (async function loadVexFlow() {
       try {
-        // 使用 jsdelivr 作為備用來源，通常比 unpkg 穩定
         const Vex = await import("https://cdn.jsdelivr.net/npm/vexflow@5.0.0/build/esm/entry/vexflow.js");
         VF = Vex;
         $("btnStart").disabled = false;
         $("btnStart").textContent = "開始錄入";
-        $("statusText").textContent = "準備就緒";
-        $("statusText").className = "status-ok";
-        sysLog("VexFlow 5.0 引擎就緒。分組策略：四分音符 (1/4)。");
+        $("statusText").textContent = "待機";
+        sysLog("VexFlow 引擎就緒。分組策略：四分音符 (1/4 拍)。");
       } catch (err) {
-        sysLog("引擎載入失敗，請檢查網路連接或重新整理。", true);
-        sysLog(err.message, true);
+        sysLog("引擎加載失敗，請檢查連線。", true);
       }
-    }
+    })();
 
-    // --- 音樂分組邏輯：以 4 單位 (16分音符*4 = 1拍) 為準 ---
+    // --- 時值與小節處理 ---
     function getDurations(units, isRest=false) {
       const opts = [
         {u:16, d:"w"}, {u:12, d:"h", dt:1}, {u:8, d:"h"},
@@ -109,6 +100,7 @@
           if (usedInBar >= 16) { measures.push(curMeasure); curMeasure = []; usedInBar = 0; }
         }
       });
+      // 自動補齊最後一小節
       if (usedInBar > 0) {
         getDurations(16 - usedInBar, true).forEach(p => curMeasure.push(p));
         measures.push(curMeasure);
@@ -116,92 +108,114 @@
       return measures;
     }
 
+    // --- 穩定渲染函數 ---
     function renderScore(measures, bpm) {
-      if (!VF) return sysLog("引擎異常，無法繪圖", true);
-      const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
-      const container = $("score"); container.innerHTML = "";
-      const renderer = new Renderer(container, Renderer.Backends.SVG);
-      const width = Math.max(800, container.clientWidth - 40);
-      renderer.resize(width, measures.length * 160 + 50);
-      const ctx = renderer.getContext();
-      let y = 40, allTies = [];
+      if (!VF) return sysLog("渲染失敗：引擎未加載", true);
+      try {
+        const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
+        const container = $("score"); container.innerHTML = "";
+        
+        // 動態計算寬度：每小節約 250px，但不超過螢幕寬
+        const measureWidth = 250;
+        const totalWidth = Math.min(window.innerWidth - 80, measures.length * measureWidth + 100);
+        
+        const renderer = new Renderer(container, Renderer.Backends.SVG);
+        renderer.resize(totalWidth, 180);
+        const ctx = renderer.getContext();
+        let x = 10, allTies = [];
 
-      measures.forEach((measure, idx) => {
-        const stave = new Stave(10, y, width - 20);
-        if (idx === 0) stave.addClef("treble").addTimeSignature("4/4").setText(`♩ = ${bpm}`, 1, { shift_y: -10 });
-        stave.setContext(ctx).draw();
+        measures.forEach((measure, idx) => {
+          const stave = new Stave(x, 40, measureWidth);
+          if (idx === 0) stave.addClef("treble").addTimeSignature("4/4").setText(`♩ = ${bpm}`, 1, { shift_y: -10 });
+          stave.setContext(ctx).draw();
 
-        const vNotes = measure.map(t => {
-          const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: t.dur + (t.isRest ? "r" : "") });
-          if (t.dots) Dot.buildAndAttach([n], { all: true });
-          t.vfNote = n; return n;
+          const vNotes = measure.map(t => {
+            const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: t.dur + (t.isRest ? "r" : "") });
+            if (t.dots) Dot.buildAndAttach([n], { all: true });
+            t.vfNote = n; return n;
+          });
+
+          // 處理連結線
+          for (let i = 0; i < measure.length - 1; i++) {
+            if (measure[i].isTie && !measure[i].isRest && !measure[i+1].isRest) {
+              allTies.push(new StaveTie({ first_note: measure[i].vfNote, last_note: measure[i+1].vfNote }));
+            }
+          }
+
+          const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
+          voice.addTickables(vNotes);
+          
+          // 排版優化：Formatter 寬度與 stave 寬度掛鉤
+          new Formatter().joinVoices([voice]).format([voice], measureWidth - 50);
+          voice.draw(ctx, stave);
+
+          // 實現 (8+16+16) 分組核心
+          const beams = Beam.generateBeams(vNotes, { groups: [new Fraction(1, 4)] });
+          beams.forEach(b => b.setContext(ctx).draw());
+          
+          x += measureWidth;
         });
 
-        for (let i = 0; i < measure.length - 1; i++) {
-          if (measure[i].isTie && !measure[i].isRest && !measure[i+1].isRest) {
-            allTies.push(new StaveTie({ first_note: measure[i].vfNote, last_note: measure[i+1].vfNote }));
-          }
-        }
-
-        const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
-        voice.addTickables(vNotes);
-        new Formatter().joinVoices([voice]).format([voice], width - 100);
-        voice.draw(ctx, stave);
-
-        // 強制按四分音符 (1/4 拍) 分組連槓，實現如 (8+16+16)=4 的視覺效果
-        const beams = Beam.generateBeams(vNotes, { groups: [new Fraction(1, 4)] });
-        beams.forEach(b => b.setContext(ctx).draw());
-        y += 160;
-      });
-      allTies.forEach(t => t.setContext(ctx).draw());
-      sysLog("五線譜分組繪製成功。");
+        allTies.forEach(t => t.setContext(ctx).draw());
+        sysLog(`成功渲染 ${measures.length} 小節。`);
+      } catch (e) {
+        sysLog("渲染過程發生錯誤：" + e.message, true);
+        console.error(e);
+      }
     }
 
-    // --- 事件處理 ---
+    // --- 事件綁定 ---
     $("btnStart").onclick = () => {
       isRecording = true; times = [];
       $("btnStart").disabled = true; $("btnStop").disabled = false;
       $("statusText").textContent = "錄入中...";
-      $("score").innerHTML = "偵測鍵盤中，請開始敲擊... 按 Space 結束。";
-      sysLog("開始錄入節奏...");
+      $("statusText").className = "status-active";
+      $("score").innerHTML = "正在捕捉節奏速度...";
+      sysLog("開始錄入...");
     };
 
-    const handleStop = () => {
+    const stopRecording = () => {
       isRecording = false;
       $("btnStart").disabled = false; $("btnStop").disabled = true;
-      if (times.length < 2) return sysLog("樣本數不足", true);
+      $("statusText").className = "";
+      if (times.length < 2) {
+        sysLog("失敗：至少需錄入兩個音符以計算速度。", true);
+        return;
+      }
       
       const itvs = [];
       for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
+      
+      // 計算最合適的速度 (BPM)
       const min = Math.min(...itvs);
       let bestU = min, bestS = Infinity;
       for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
         let err = itvs.reduce((a, x) => a + Math.abs(x - Math.max(1, Math.round(x/u))*u), 0);
         if (err/u < bestS) { bestS = err/u; bestU = u; }
       }
+      
       const bpm = Math.round(60000 / (bestU * 4));
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
       $("bpmText").textContent = bpm;
-      $("statusText").textContent = "待機";
+      $("statusText").textContent = "完成分析";
+      sysLog(`分析速度: ${bpm} BPM。量化單位: ${Math.round(bestU)}ms。`);
+      
       renderScore(buildMeasures(q), bpm);
     };
 
-    $("btnStop").onclick = handleStop;
+    $("btnStop").onclick = stopRecording;
+    $("btnReset").onclick = () => location.reload();
 
     document.onkeydown = (e) => {
       if (!isRecording) return;
-      if (e.code === "Space") { e.preventDefault(); handleStop(); return; }
+      if (e.code === "Space") { e.preventDefault(); stopRecording(); return; }
       const now = performance.now();
       if (lastKeyTime > 0 && (now - lastKeyTime) < DEBOUNCE) return;
       lastKeyTime = now;
       times.push(now);
       $("noteCount").textContent = times.length;
-      sysLog(`音符 ${times.length}: ${Math.round(now)}ms`);
+      sysLog(`偵測音符 ${times.length}`);
     };
-
-    // 啟動流程
-    initUI();
-    loadEngine();
 
   </script>
 </body>
