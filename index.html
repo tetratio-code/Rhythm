@@ -2,69 +2,166 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>節奏王 v1.3</title>
+  <title>節奏王 v1.4 - 診斷版</title>
   <style>
-    :root { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", Arial, sans-serif; }
+    :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f9f9f9; }
-    .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-    button { padding: 10px 14px; font-size: 14px; cursor: pointer; border-radius: 6px; border: 1px solid #ccc; background: white; }
-    button:disabled { cursor: not-allowed; opacity: 0.5; }
-    .pill { padding: 6px 10px; border: 1px solid #ddd; border-radius: 999px; background: white; }
-    .muted { color: #666; }
-    .box { border: 1px solid #e5e5e5; border-radius: 12px; padding: 12px 14px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-    #status { font-weight: 700; }
-    #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; background: #f4f4f4; padding: 8px; border-radius: 6px; }
-    #score { overflow-x: auto; min-height: 100px; display: flex; align-items: center; }
-    .ok { color: #15803d; }
-    .warn { color: #b45309; }
+    .box { border: 1px solid #e5e5e5; border-radius: 12px; padding: 14px; background: white; margin-bottom: 12px; }
+    button { padding: 10px 14px; cursor: pointer; border-radius: 6px; border: 1px solid #ccc; }
+    button:disabled { opacity: 0.5; }
+    #log { font-family: monospace; font-size: 12px; background: #333; color: #0f0; padding: 10px; border-radius: 6px; min-height: 40px; }
+    #score { overflow-x: auto; background: white; border: 1px solid #eee; margin-top: 10px; min-height: 100px; }
+    .status-pill { padding: 4px 8px; border-radius: 999px; background: #eee; font-size: 14px; }
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王 v1.3</h1>
+  <h1>節奏王 v1.4</h1>
 
   <div class="box">
-    <div class="row">
-      <button id="btnStart">開始錄入</button>
-      <button id="btnStop" disabled>Space 結束 / 停止</button>
-      <button id="btnReset">重置</button>
-      <span class="pill">狀態：<span id="status" class="muted">待機</span></span>
-      <span class="pill">音符數：<span id="noteCount">0</span>/100</span>
-    </div>
-    <p style="margin: 10px 0 0; font-size: 0.9em;" class="muted">
-      操作：按「開始」後用鍵盤敲節奏，按 <b>Space</b> 結束。系統會自動進行拍子分組。
-    </p>
+    <button id="btnStart">開始錄入</button>
+    <button id="btnStop" disabled>Space 結束</button>
+    <button id="btnReset">重置</button>
+    <span class="status-pill">狀態：<b id="statusText">載入中...</b></span>
+    <span class="status-pill">音符：<b id="noteCount">0</b></span>
   </div>
 
-  <div class="row" style="margin-top: 12px;">
-    <span class="pill">基本單位：<b id="unitMs">—</b> ms</span>
-    <span class="pill">推估速度：<b id="bpm">—</b> BPM</span>
-  </div>
+  <div id="score"></div>
 
-  <div class="box" style="margin-top: 12px;">
-    <div id="score"></div>
-  </div>
-
-  <div class="box" style="margin-top: 12px;">
-    <b>Debug 訊息</b>
-    <div id="log">等待操作中...</div>
+  <div class="box" style="background: #222;">
+    <b style="color: white;">系統開發者控制台 (System Log)</b>
+    <div id="log">正在初始化核心模組...</div>
   </div>
 
   <script type="module">
-    console.log("正在載入 VexFlow...");
-    import {
-      Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction
-    } from "https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js";
-    window.VF_ = { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction };
-    console.log("VexFlow 載入完成。");
-  </script>
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log");
+    
+    // 自定義 Log 函數，確保訊息能即時顯示
+    function sysLog(msg, isError = false) {
+      const time = new Date().toLocaleTimeString();
+      const newEntry = document.createElement("div");
+      newEntry.style.color = isError ? "#ff4444" : "#0f0";
+      newEntry.textContent = `[${time}] ${msg}`;
+      logEl.appendChild(newEntry);
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(msg);
+    }
 
-  <script>
-    // 封裝在 DOMContentLoaded 確保元件都已抓取到
-    document.addEventListener("DOMContentLoaded", () => {
-      const MAX_NOTES = 100;
-      const DEBOUNCE_MS = 50;
-      let isRecording = false, times = [], lastKeyTime = -1;
+    sysLog("腳本啟動...");
+
+    // 1. 嘗試載入 VexFlow
+    let VF = null;
+    try {
+      sysLog("嘗試連線至 unpkg.com 載入 VexFlow...");
+      const Vex = await import("https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js");
+      VF = Vex;
+      sysLog("VexFlow 引擎載入成功！");
+    } catch (err) {
+      sysLog("VexFlow 載入失敗！請檢查網路連線或防火牆。", true);
+      sysLog(`錯誤原因: ${err.message}`, true);
+    }
+
+    // 2. 變數與狀態
+    let isRecording = false, times = [], lastKeyTime = -1;
+    const MAX_NOTES = 100;
+    const DEBOUNCE = 50;
+
+    // 3. 核心功能函數
+    function splitUnits(units) {
+      const opt = [{u:16, d:"w"}, {u:12, d:"h", dt:1}, {u:8, d:"h"}, {u:6, d:"q", dt:1}, {u:4, d:"q"}, {u:3, d:"8", dt:1}, {u:2, d:"8"}, {u:1, d:"16"}];
+      let res = [], rem = units;
+      while (rem > 0) {
+        let p = opt.find(o => o.u <= rem) || opt[opt.length-1];
+        res.push({ dur: p.d, dots: p.dt || 0, units: p.u });
+        rem -= p.u;
+      }
+      return res;
+    }
+
+    function analyze(intervals) {
+      const min = Math.min(...intervals);
+      let best = { u: min, s: Infinity };
+      for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
+        let err = intervals.reduce((a, x) => a + Math.abs(x - Math.max(1, Math.round(x/u))*u), 0);
+        let s = err / (u * intervals.length);
+        if (s < best.s) best = { u: u, s: s };
+      }
+      return intervals.map(x => Math.max(1, Math.round(x / best.u)));
+    }
+
+    // 4. 繪圖邏輯
+    function draw(qUnits) {
+      if (!VF) return sysLog("無繪圖引擎，放棄繪圖。", true);
+      const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
       
-      const $ = (id) => document.getElementById(id);
-      const log = (msg) => { $("log").textContent =
+      const container = $("score");
+      container.innerHTML = "";
+      const renderer = new Renderer(container, Renderer.Backends.SVG);
+      renderer.resize(800, 200);
+      const ctx = renderer.getContext();
+      const stave = new Stave(10, 40, 750);
+      stave.addClef("treble").addTimeSignature("4/4").setContext(ctx).draw();
+
+      // 簡單轉換為 VexNotes (簡化版確保不報錯)
+      const vNotes = [];
+      qUnits.forEach(u => {
+        splitUnits(u).forEach(p => {
+          const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: p.dur });
+          if (p.dots) Dot.buildAndAttach([n], { all: true });
+          vNotes.push(n);
+        });
+      });
+
+      const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
+      // 注意：這裡只畫前 4 拍，避免超出範圍
+      try {
+        voice.addTickables(vNotes);
+        new Formatter().joinVoices([voice]).format([voice], 700);
+        voice.draw(ctx, stave);
+        sysLog("五線譜繪製完成！");
+      } catch(e) {
+        sysLog("繪圖格式錯誤 (可能是錄入長度非整數小節)", true);
+      }
+    }
+
+    // 5. 事件綁定
+    $("btnStart").onclick = () => {
+      sysLog("點擊開始按鈕");
+      isRecording = true; times = [];
+      $("btnStart").disabled = true; $("btnStop").disabled = false;
+      $("statusText").textContent = "錄入中...";
+      $("score").innerHTML = "請開始敲擊鍵盤...";
+    };
+
+    $("btnStop").onclick = () => {
+      sysLog("點擊結束按鈕");
+      isRecording = false;
+      $("btnStart").disabled = false; $("btnStop").disabled = true;
+      if (times.length < 2) return sysLog("音符太少，無法分析", true);
+      
+      let itvs = [];
+      for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
+      const q = analyze(itvs);
+      draw(q);
+      $("statusText").textContent = "完成分析";
+    };
+
+    $("btnReset").onclick = () => location.reload();
+
+    document.onkeydown = (e) => {
+      if (!isRecording) return;
+      if (e.code === "Space") { e.preventDefault(); $("btnStop").onclick(); return; }
+      const now = performance.now();
+      if (lastKeyTime > 0 && (now - lastKeyTime) < DEBOUNCE) return;
+      lastKeyTime = now;
+      times.push(now);
+      $("noteCount").textContent = times.length;
+      sysLog(`錄入第 ${times.length} 個音符`);
+    };
+
+    sysLog("所有系統組件就緒，請開始使用！");
+    $("statusText").textContent = "待機中";
+
+  </script>
+</body>
+</html>
