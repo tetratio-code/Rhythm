@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.9</title>
+  <title>節奏王 v2.9 - Beaming Debug 版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -10,7 +10,7 @@
     button { padding: 10px 18px; cursor: pointer; border-radius: 6px; border: 1px solid #bbb; font-weight: bold; transition: 0.2s; }
     button:hover:not(:disabled) { background: #f0f0f0; border-color: #888; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
-    #log { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; background: #1e1e1e; color: #50fa7b; padding: 12px; border-radius: 8px; height: 140px; overflow-y: auto; line-height: 1.5; }
+    #log { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; background: #1e1e1e; color: #50fa7b; padding: 12px; border-radius: 8px; height: 180px; overflow-y: auto; line-height: 1.5; }
     #score { overflow-x: auto; background: white; border: 1px solid #ddd; min-height: 200px; padding: 20px; border-radius: 12px; }
     .pill { padding: 6px 12px; border-radius: 999px; background: #e9ecef; font-size: 13px; margin-right: 8px; font-weight: 600; color: #495057; }
     .status-active { color: #d9480f; animation: blink 1s infinite; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.9debug</h1>
+  <h1>節奏王 v2.91 <small style="font-size: 14px; color: #666;">Debug Mode</small></h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎載入中...</button>
@@ -47,22 +47,25 @@
       const time = new Date().toLocaleTimeString([], {hour12:false});
       const div = document.createElement("div");
       div.style.color = isError ? "#ff5555" : "#50fa7b";
-      div.textContent = `[${time}] ${msg}`;
+      div.innerHTML = `[${time}] ${msg}`;
       logEl.appendChild(div);
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // 引擎準備就緒
-    sysLog("音樂引擎載入成功。目前音高：F4。分組：四分音符。");
+    sysLog("音樂引擎載入成功。目標：精準拍子對齊與連槓控制。");
     $("btnStart").disabled = false;
     $("btnStart").textContent = "開始錄入";
     $("statusText").textContent = "待機";
 
     let isRecording = false, times = [], lastKeyTime = -1;
-    const MAX_NOTES = 100, DEBOUNCE = 50;
+    const DEBOUNCE = 50;
 
     function getDurations(units, isRest=false) {
-      const opts = [{u:16, d:"w"}, {u:12, d:"h", dt:1}, {u:8, d:"h"}, {u:6, d:"q", dt:1}, {u:4, d:"q"}, {u:3, d:"8", dt:1}, {u:2, d:"8"}, {u:1, d:"16"}];
+      const opts = [
+        {u:16, d:"w"}, {u:12, d:"h", dt:1}, {u:8, d:"h"}, 
+        {u:6, d:"q", dt:1}, {u:4, d:"q"}, {u:3, d:"8", dt:1}, 
+        {u:2, d:"8"}, {u:1, d:"16"}
+      ];
       let res = [], rem = units;
       while (rem > 0) {
         let p = opts.find(o => o.u <= rem) || opts[opts.length-1];
@@ -82,14 +85,14 @@
           let take = Math.min(rem, spaceInBeat);
           let parts = getDurations(take, false);
           parts.forEach((p, idx) => {
+            // 如果這個音符沒被扣完，或者它只是多部份中的一部分，標記 Tie
             p.isTie = (idx < parts.length - 1) || (rem > take);
-            curMeasure.push(p);
+            curMeasure.push({...p});
           });
           usedInBar += take; rem -= take;
           if (usedInBar >= 16) { measures.push(curMeasure); curMeasure = []; usedInBar = 0; }
         }
       });
-      // 補滿最後一個小節的休止符
       if (usedInBar > 0) {
         getDurations(16 - usedInBar, true).forEach(p => curMeasure.push(p));
         measures.push(curMeasure);
@@ -98,28 +101,12 @@
     }
 
     function renderScore(measures, bpm) {
-      // 請將此段放入 renderScore(measures, bpm) 函式內
-      console.group("🎵 VexFlow 渲染調試資訊");
-      console.log("當前估算 BPM:", bpm);
-      console.log("小節總數:", measures.length);
-      console.log("原始小節數據結構 (Measures):", JSON.parse(JSON.stringify(measures)));
-      
-      measures.forEach((m, i) => {
-          console.log(`第 ${i+1} 小節音符數:`, m.length);
-          console.table(m.map(token => ({
-              "Vex Duration": token.dur + (token.isRest ? "r" : ""),
-              "附點": token.dots,
-              "16分音符單位": token.units,
-              "是否連譜 (Tie)": token.isTie,
-              "是否休止": token.isRest
-          })));
-      });
-      console.groupEnd();
       try {
         const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
         
-        // --- 線性排版參數 ---
+        sysLog(`>>> 渲染啟動 | BPM: ${bpm} | 小節數: ${measures.length}`);
+
         const TICK_PX = 25; 
         const CONTENT_WIDTH = 16 * TICK_PX; 
         const FIRST_BAR_PADDING = 80; 
@@ -140,22 +127,27 @@
           if (isFirst) stave.addClef("treble").addTimeSignature("4/4");
           stave.setContext(ctx).draw();
 
+          // Monitor 日誌輸出
+          let debugStr = measure.map(t => `${t.isRest?'R':'N'}(${t.dur}${t.dots?'.':''}${t.isTie?'_T':''})`).join(" ");
+          sysLog(`M${idx+1} 結構: <span style="color:#bd93f9">${debugStr}</span>`);
+
           const vNotes = measure.map(t => {
-            // 修改：音高 F4，符桿向上 (stem_direction: 1)
             const n = new StaveNote({ 
               clef: "treble", 
               keys: ["f/4"], 
               duration: t.dur + (t.isRest ? "r" : ""),
               stem_direction: 1 
             });
-            if (t.dots) Dot.buildAndAttach([n], { all: true });
+            if (t.dots > 0) {
+              for(let d=0; d<t.dots; d++) Dot.buildAndAttach([n], { all: true });
+            }
             t.vfNote = n;
             return n;
           });
 
+          // Tie 邏輯
           measure.forEach(token => {
             if (pendingTieNote && !token.isRest) {
-              // 連結線在下方
               allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
               pendingTieNote = null;
             }
@@ -164,27 +156,23 @@
 
           const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
           voice.addTickables(vNotes);
-          
-          // 格式化對齊
           new Formatter().joinVoices([voice]).formatToStave([voice], stave);
 
-          // 核心修正：包含最後一個音符的完整分組行為
-          // 先產生連槓，VexFlow 會自動標記 beamed 狀態以移除符尾
+          // 關鍵修正：強製按拍分組 (1/4)
           const beams = Beam.generateBeams(vNotes, { 
             groups: [new Fraction(1, 4)] 
           });
 
-          // 繪製音符與連槓
           voice.draw(ctx, stave);
           beams.forEach(b => b.setContext(ctx).draw());
-          
           curX += stave.getWidth();
         });
 
         allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`成功渲染。線性比例：${TICK_PX}px/單位。`);
+        sysLog(`渲染成功。線性寬度: ${totalWidth}px`);
       } catch (e) {
         sysLog("渲染錯誤: " + e.message, true);
+        console.error(e);
       }
     }
 
@@ -193,7 +181,8 @@
       $("btnStart").disabled = true; $("btnStop").disabled = false;
       $("statusText").textContent = "錄入中...";
       $("statusText").className = "status-active";
-      sysLog("開始錄入...");
+      logEl.innerHTML = "";
+      sysLog("開始錄入... 請輸入節奏。");
     };
 
     const stopRecording = () => {
@@ -204,6 +193,7 @@
       
       const itvs = [];
       for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
+      
       const min = itvs.length > 0 ? Math.min(...itvs) : 250; 
       let bestU = min, bestS = Infinity;
       for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
@@ -213,14 +203,16 @@
       }
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
 
-      // 修改：最後一個音符補滿當下 4 分音符空缺
+      // 最後補滿 4 分音符空缺
       const totalUnits = q.reduce((sum, val) => sum + val, 0);
       const fillUnits = 4 - (totalUnits % 4); 
       q.push(fillUnits);
 
       const bpm = Math.round(60000 / (bestU * 4));
       $("bpmText").textContent = bpm;
-      $("statusText").textContent = "完成";
+      $("statusText").textContent = "分析完成";
+      sysLog(`分析結果: 最小單位約 ${Math.round(bestU)}ms | qUnits: [${q.join(",")}]`);
+      
       renderScore(buildMeasures(q), bpm);
     };
 
@@ -235,7 +227,7 @@
       lastKeyTime = now;
       times.push(now);
       $("noteCount").textContent = times.length;
-      sysLog(`偵測音符 ${times.length}`);
+      sysLog(`Note ${times.length} 偵測`);
     };
   </script>
 </body>
