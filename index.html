@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.0 - 完整顯示版</title>
+  <title>節奏王 v2.1 - 完美排版版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -11,14 +11,14 @@
     button:hover:not(:disabled) { background: #f0f0f0; border-color: #888; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     #log { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; background: #1e1e1e; color: #50fa7b; padding: 12px; border-radius: 8px; height: 140px; overflow-y: auto; line-height: 1.5; }
-    #score { overflow-x: auto; background: white; border: 1px solid #ddd; min-height: 180px; padding: 20px; border-radius: 12px; }
+    #score { overflow-x: auto; background: white; border: 1px solid #ddd; min-height: 200px; padding: 20px; border-radius: 12px; }
     .pill { padding: 6px 12px; border-radius: 999px; background: #e9ecef; font-size: 13px; margin-right: 8px; font-weight: 600; color: #495057; }
     .status-active { color: #d9480f; animation: blink 1s infinite; }
     @keyframes blink { 50% { opacity: 0.5; } }
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.0</h1>
+  <h1>節奏王 v2.1</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎加載中...</button>
@@ -32,7 +32,7 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Final Layout & Tail-end Fix Monitor</b>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Linear Spacing & Measure Alignment Monitor</b>
     <div id="log">系統啟動中...</div>
   </div>
 
@@ -60,7 +60,7 @@
         $("btnStart").disabled = false;
         $("btnStart").textContent = "開始錄入";
         $("statusText").textContent = "待機";
-        sysLog("VexFlow 5.0 就緒。已修復最後一個音符與排版比例。");
+        sysLog("VexFlow 5.0 就緒。完美線性排版已啟用。");
       } catch (err) {
         sysLog("引擎加載失敗。", true);
       }
@@ -101,37 +101,38 @@
       return measures;
     }
 
+    // --- 核心修正：線性排版渲染 ---
     function renderScore(measures, bpm) {
-      if (!VF) return sysLog("引擎未加載", true);
+      if (!VF) return sysLog("渲染失敗：引擎未加載", true);
       try {
         const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
         
-        // --- 排版修正：確保線性佔寬與固定小節寬度 ---
-        const UNIT_PX = 30; // 每個 16 分音符固定佔 30px
-        const STAVE_LEFT_PADDING = 80; // 第一小節譜號寬度
-        const BAR_WIDTH = 16 * UNIT_PX; // 固定小節寬度
+        // 1. 定義物理比例：每個 16 分音符 tick 佔 25px
+        const TICK_PX = 25; 
+        const CONTENT_WIDTH = 16 * TICK_PX; // 400px
+        const FIRST_BAR_PADDING = 80; // 第一小節譜號寬度
         
-        const totalWidth = measures.length * (BAR_WIDTH + 20) + STAVE_LEFT_PADDING + 50;
+        // 2. 計算總畫布寬度
+        const totalWidth = (measures.length * CONTENT_WIDTH) + FIRST_BAR_PADDING + 100;
         const renderer = new Renderer(container, Renderer.Backends.SVG);
         renderer.resize(totalWidth, 200);
         const ctx = renderer.getContext();
         
-        let x = 10;
+        let curX = 20; // 起始 X
         let allTies = [];
         let pendingTieNote = null;
 
         measures.forEach((measure, idx) => {
-          // 第一個小節需要預留譜號空間
-          const currentBarWidth = idx === 0 ? BAR_WIDTH + STAVE_LEFT_PADDING : BAR_WIDTH;
-          const stave = new Stave(x, 40, currentBarWidth);
+          // 3. 計算當前小節寬度
+          const isFirst = (idx === 0);
+          const barWidth = CONTENT_WIDTH + (isFirst ? FIRST_BAR_PADDING : 0);
           
-          if (idx === 0) {
-            stave.addClef("treble").addTimeSignature("4/4");
-            stave.setText(`♩ = ${bpm}`, 1, { shift_y: -10 });
-          }
+          const stave = new Stave(curX, 40, barWidth);
+          if (isFirst) stave.addClef("treble").addTimeSignature("4/4");
           stave.setContext(ctx).draw();
 
+          // 4. 準備音符
           const vNotes = measure.map(t => {
             const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: t.dur + (t.isRest ? "r" : "") });
             if (t.dots) Dot.buildAndAttach([n], { all: true });
@@ -139,7 +140,7 @@
             return n;
           });
 
-          // 連結線追蹤
+          // 5. 連結線邏輯
           measure.forEach(token => {
             if (pendingTieNote && !token.isRest) {
               allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
@@ -148,79 +149,5 @@
             if (token.isTie && !token.isRest) pendingTieNote = token.vfNote;
           });
 
-          const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
-          voice.addTickables(vNotes);
-          
-          // 排版核心：強制 Formatter 使用固定寬度，達成 8分音符=2倍16分音符距離
-          const formatWidth = currentBarWidth - (idx === 0 ? STAVE_LEFT_PADDING : 20);
-          new Formatter().joinVoices([voice]).format([voice], formatWidth);
-          voice.draw(ctx, stave);
-
-          const beams = Beam.generateBeams(vNotes, { groups: [new Fraction(1, 4)] });
-          beams.forEach(b => b.setContext(ctx).draw());
-          
-          x += currentBarWidth;
-        });
-
-        allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`成功渲染。排版模式：線性等寬 (Bar: ${BAR_WIDTH}px)。`);
-      } catch (e) {
-        sysLog("渲染錯誤: " + e.message, true);
-      }
-    }
-
-    $("btnStart").onclick = () => {
-      isRecording = true; times = [];
-      $("btnStart").disabled = true; $("btnStop").disabled = false;
-      $("statusText").textContent = "錄入中...";
-      $("statusText").className = "status-active";
-      sysLog("開始錄入...");
-    };
-
-    const stopRecording = () => {
-      const stopTime = performance.now(); // 捕捉按下 Space 的那一刻
-      isRecording = false;
-      $("btnStart").disabled = false; $("btnStop").disabled = true;
-      $("statusText").className = "";
-      
-      if (times.length < 1) return sysLog("樣本不足", true);
-      
-      const itvs = [];
-      // 1. 計算音符間距
-      for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
-      
-      // 2. 關鍵修正：將最後一次敲擊到按下 Space 的長度視為最後一個音符的時值
-      const lastNoteDuration = stopTime - times[times.length - 1];
-      itvs.push(Math.max(lastNoteDuration, 150)); // 確保最後一個音符至少有基本長度
-      
-      const min = Math.min(...itvs);
-      let bestU = min, bestS = Infinity;
-      for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
-        let err = itvs.reduce((a, x) => a + Math.abs(x - Math.max(1, Math.round(x/u))*u), 0);
-        if (err/u < bestS) { bestS = err/u; bestU = u; }
-      }
-      const bpm = Math.round(60000 / (bestU * 4));
-      const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
-      
-      $("bpmText").textContent = bpm;
-      $("statusText").textContent = "完成";
-      sysLog(`分析完成。音符數：${q.length}。最後音符長度：${Math.round(lastNoteDuration)}ms。`);
-      renderScore(buildMeasures(q), bpm);
-    };
-
-    $("btnStop").onclick = stopRecording;
-    $("btnReset").onclick = () => location.reload();
-
-    document.onkeydown = (e) => {
-      if (!isRecording) return;
-      if (e.code === "Space") { e.preventDefault(); stopRecording(); return; }
-      const now = performance.now();
-      if (lastKeyTime > 0 && (now - lastKeyTime) < DEBOUNCE) return;
-      lastKeyTime = now;
-      times.push(now);
-      $("noteCount").textContent = times.length;
-      sysLog(`偵測音符 ${times.length}`);
-    };
-  </script>
-</body>
-</html>
+          // 6. 關鍵修正：使用 formatToStave 確保音符與小節線嚴格對齊
+          const voice = new Voice({ num_beats: 4, beat_value:
