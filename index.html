@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王.</h1>
+  <h1 style="margin: 0 0 10px;">節奏王</h1>
 
   <div class="box">
     <div class="row">
@@ -291,80 +291,139 @@
       const container = document.getElementById("score");
       container.innerHTML = "";
     
-      const width = Math.max(900, Math.min(1400, container.clientWidth || 1000));
-      const staffHeight = 150;
       const margin = 18;
+      const lineStaffHeight = 170;
+      const maxWidth = Math.max(950, Math.min(1500, container.clientWidth || 1100));
     
-      const measuresPerLine = width >= 1200 ? 6 : (width >= 1000 ? 5 : 4);
-      const totalLines = Math.max(1, Math.ceil(measures.length / measuresPerLine));
+      // ---- 先把每小節轉成 vexNotes（保留，後面還要 beam）----
+      const all = measures.map(tokens => {
+        const vexNotes = tokens.map(t => {
+          const dur = t.dur + (t.isRest ? "r" : "");
+          const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: dur });
+          if (t.dots) Dot.buildAndAttach([n], { all: true });
+          return n;
+        });
+        return { vexNotes };
+      });
     
+      // ---- 動態估算每小節需要的寬度：音符越多越寬，避免擠爆 ----
+      // 一個很實用的 heuristic：base + noteCount*factor（再 clamp）
+      function measureWidthFor(vexNotes) {
+        const n = vexNotes.length;
+        return Math.max(180, Math.min(340, 120 + n * 22));
+      }
+    
+      // ---- 行分配：把小節塞進一行，直到超過 maxWidth ----
+      const lines = [];
+      let curLine = [];
+      let curW = margin;
+    
+      for (let i = 0; i < all.length; i++) {
+        const w = measureWidthFor(all[i].vexNotes);
+        if (curLine.length > 0 && curW + w > maxWidth - margin) {
+          lines.push(curLine);
+          curLine = [];
+          curW = margin;
+        }
+        curLine.push({ idx: i, w });
+        curW += w;
+      }
+      if (curLine.length) lines.push(curLine);
+    
+      const totalH = lines.length * lineStaffHeight + margin * 2;
       const renderer = new Renderer(container, Renderer.Backends.SVG);
-      renderer.resize(width, totalLines * staffHeight + margin * 2);
+      renderer.resize(maxWidth, totalH);
       const ctx = renderer.getContext();
     
+      // ---- 拍內 beam：每拍(1/4) = 1024 ticks（在 VexFlow 裡）----
+      // 我們用 ticks 來切拍，避免附點/混合音值把 generateBeams 搞亂
+      const BEAT_TICKS = 1024;         // quarter
+      const BAR_TICKS = BEAT_TICKS*4;  // 4/4
+    
+      function isBeamable(note) {
+        // 只連 8/16（含附點八分通常不連）
+        // duration 字串例： "8", "16", "8r", "q", "h"...
+        const d = note.getDuration();
+        if (note.isRest && note.isRest()) return false;
+        return (d === "8" || d === "16" || d === "32");
+      }
+    
+      function buildBeamsByBeat(vexNotes) {
+        const beams = [];
+        let beatPos = 0;
+        let group = [];   // 同一拍內可連的 notes
+    
+        function flushGroup() {
+          if (group.length >= 2) {
+            beams.push(new Beam(group));
+          }
+          group = [];
+        }
+    
+        for (const n of vexNotes) {
+          const ticks = n.getTicks().value(); // Fraction
+          // 若跨拍或遇到不可連的，先 flush
+          if (beatPos >= BEAT_TICKS) {
+            beatPos = beatPos % BEAT_TICKS;
+            flushGroup();
+          }
+    
+          if (!isBeamable(n)) {
+            flushGroup();
+          } else {
+            group.push(n);
+          }
+    
+          beatPos += ticks;
+    
+          // 一拍結束也 flush，確保按拍分組
+          if (beatPos === BEAT_TICKS) {
+            flushGroup();
+          } else if (beatPos > BEAT_TICKS) {
+            // 罕見：音符跨拍（理論上你的拆分已避免）
+            flushGroup();
+            beatPos = beatPos % BEAT_TICKS;
+          }
+        }
+        flushGroup();
+        return beams;
+      }
+    
+      // ---- 畫每一行 ----
       let y = margin;
     
-      for (let line = 0; line < totalLines; line++) {
-        const start = line * measuresPerLine;
-        const end = Math.min(measures.length, start + measuresPerLine);
-        const lineMeasures = measures.slice(start, end);
-    
-        const staffW = Math.floor((width - margin * 2) / measuresPerLine);
+      for (let li = 0; li < lines.length; li++) {
+        const line = lines[li];
         let x = margin;
     
-        for (let mi = 0; mi < lineMeasures.length; mi++) {
-          const tokens = lineMeasures[mi];
+        for (let mi = 0; mi < line.length; mi++) {
+          const { idx, w } = line[mi];
+          const vexNotes = all[idx].vexNotes;
     
-          const stave = new Stave(x, y, staffW);
-          if (line === 0 && mi === 0) {
+          const stave = new Stave(x, y, w);
+          if (li === 0 && mi === 0) {
             stave.addClef("treble").addTimeSignature("4/4");
-            stave.setText(`♩ = ${bpm}`, 1, { shift_y: -10, shift_x: 10 }); // 1=ABOVE
+            stave.setText(`♩ = ${bpm}`, 1, { shift_y: -10, shift_x: 10 });
           }
           stave.setContext(ctx).draw();
     
-          try {
-            const vexNotes = tokens.map(t => {
-              const dur = t.dur + (t.isRest ? "r" : "");
-              const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: dur });
-              if (t.dots) Dot.buildAndAttach([n], { all: true });
-              return n;
-            });
+          const voice = new Voice({ num_beats: 4, beat_value: 4 });
+          voice.setMode(Voice.Mode.SOFT);
+          voice.addTickables(vexNotes);
     
-            const voice = new Voice({ num_beats: 4, beat_value: 4 });
-            // ✅ 關鍵：SOFT 模式，避免 tick 對不上就整段不畫
-            voice.setMode(Voice.Mode.SOFT);
+          new Formatter().joinVoices([voice]).format([voice], w - 30);
     
-            voice.addTickables(vexNotes);
+          // 先畫音符
+          voice.draw(ctx, stave);
     
-            new Formatter().joinVoices([voice]).format([voice], staffW - 30);
+          // 再按拍做 beam
+          const beams = buildBeamsByBeat(vexNotes);
+          beams.forEach(b => b.setContext(ctx).draw());
     
-            // ✅ 先畫音符（就算 beam 壞了也要先看到音符）
-            voice.draw(ctx, stave);
-    
-            // ✅ Beam 可能會因為 rest / whole note 等狀況丟例外，保護起來
-            try {
-              const beams = Beam.generateBeams(vexNotes, {
-                groups: [{ num_beats: 1, beat_value: 4 }]
-              });
-              beams.forEach(b => b.setContext(ctx).draw());
-            } catch (e) {
-              // 不影響音符顯示
-              console.warn("Beam error:", e);
-            }
-          } catch (e) {
-            console.error("Render error:", e);
-            // 在畫面上顯示錯誤（避免你只看到空譜表）
-            const msg = document.createElement("div");
-            msg.className = "warn";
-            msg.style.margin = "8px 0 0";
-            msg.textContent = "繪譜時發生錯誤（請開 Console 看 Render error）。";
-            container.appendChild(msg);
-          }
-    
-          x += staffW;
+          x += w;
         }
     
-        y += staffHeight;
+        y += lineStaffHeight;
       }
     }
 
