@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王4</h1>
+  <h1 style="margin: 0 0 10px;">節奏王5</h1>
 
   <div class="box">
     <div class="row">
@@ -56,13 +56,11 @@
     <div id="log" style="margin-top: 8px;"></div>
   </div>
 
-  <!-- VexFlow (ESM) -->
-  <script type="module">
-    import {
-      Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, Flow
-    } from "https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js";
-    
-    window.VF_ = { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, Flow };
+  <!-- VexFlow -->
+  <script src="https://cdn.jsdelivr.net/npm/vexflow@5.0.0/build/vexflow.js"></script>
+  <script>
+    // 把你原本 window.VF_ 的來源改成 Vex.Flow
+    window.VF_ = Vex.Flow;
   </script>
 
   <script>
