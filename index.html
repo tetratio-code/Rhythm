@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.9 - Beaming Debug 版</title>
+  <title>節奏王 v2.93 - Precise 1/4 Beaming</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.91 <small style="font-size: 14px; color: #666;">Debug Mode</small></h1>
+  <h1>節奏王 v2.93 <small style="font-size: 14px; color: #666;">Manual 1/4 Grouping</small></h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎載入中...</button>
@@ -52,7 +52,7 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    sysLog("音樂引擎載入成功。目標：精準拍子對齊與連槓控制。");
+    sysLog("音樂引擎載入成功。採用手動拍子分組演算法 (Manual 1/4 Beaming)。");
     $("btnStart").disabled = false;
     $("btnStart").textContent = "開始錄入";
     $("statusText").textContent = "待機";
@@ -85,7 +85,6 @@
           let take = Math.min(rem, spaceInBeat);
           let parts = getDurations(take, false);
           parts.forEach((p, idx) => {
-            // 如果這個音符沒被扣完，或者它只是多部份中的一部分，標記 Tie
             p.isTie = (idx < parts.length - 1) || (rem > take);
             curMeasure.push({...p});
           });
@@ -102,10 +101,10 @@
 
     function renderScore(measures, bpm) {
       try {
-        const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
+        const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie } = VF;
         const container = $("score"); container.innerHTML = "";
         
-        sysLog(`>>> 渲染啟動 | BPM: ${bpm} | 小節數: ${measures.length}`);
+        sysLog(`>>> 渲染啟動 | BPM: ${bpm} | 採用手動 1/4 符桿控制`);
 
         const TICK_PX = 25; 
         const CONTENT_WIDTH = 16 * TICK_PX; 
@@ -127,9 +126,7 @@
           if (isFirst) stave.addClef("treble").addTimeSignature("4/4");
           stave.setContext(ctx).draw();
 
-          // Monitor 日誌輸出
-          let debugStr = measure.map(t => `${t.isRest?'R':'N'}(${t.dur}${t.dots?'.':''}${t.isTie?'_T':''})`).join(" ");
-          sysLog(`M${idx+1} 結構: <span style="color:#bd93f9">${debugStr}</span>`);
+          sysLog(`M${idx+1} 分析中...`);
 
           const vNotes = measure.map(t => {
             const n = new StaveNote({ 
@@ -145,7 +142,7 @@
             return n;
           });
 
-          // Tie 邏輯
+          // 處理 Tie
           measure.forEach(token => {
             if (pendingTieNote && !token.isRest) {
               allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
@@ -158,9 +155,27 @@
           voice.addTickables(vNotes);
           new Formatter().joinVoices([voice]).formatToStave([voice], stave);
 
-          // 關鍵修正：強製按拍分組 (1/4)
-          const beams = Beam.generateBeams(vNotes, { 
-            groups: [new Fraction(1, 4)] 
+          // --- 關鍵修正：手動 1/4 分組連槓邏輯 ---
+          let beams = [];
+          let beatNotes = [];
+          let currentUnits = 0;
+
+          measure.forEach((t, i) => {
+            // 只有 8 分音符以下的非休止符才需要連槓
+            if (!t.isRest && t.units < 4) {
+              beatNotes.push(vNotes[i]);
+            }
+
+            currentUnits += t.units;
+
+            // 每當累計滿 4 個單位 (1拍) 或者小節結束時，結算一次連槓
+            if (currentUnits >= 4 || i === measure.length - 1) {
+              if (beatNotes.length > 1) {
+                beams.push(new Beam(beatNotes));
+              }
+              beatNotes = [];
+              currentUnits = currentUnits % 4; // 處理跨拍音符的餘數
+            }
           });
 
           voice.draw(ctx, stave);
@@ -182,7 +197,7 @@
       $("statusText").textContent = "錄入中...";
       $("statusText").className = "status-active";
       logEl.innerHTML = "";
-      sysLog("開始錄入... 請輸入節奏。");
+      sysLog("開始錄入...");
     };
 
     const stopRecording = () => {
@@ -203,7 +218,6 @@
       }
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
 
-      // 最後補滿 4 分音符空缺
       const totalUnits = q.reduce((sum, val) => sum + val, 0);
       const fillUnits = 4 - (totalUnits % 4); 
       q.push(fillUnits);
@@ -211,8 +225,6 @@
       const bpm = Math.round(60000 / (bestU * 4));
       $("bpmText").textContent = bpm;
       $("statusText").textContent = "分析完成";
-      sysLog(`分析結果: 最小單位約 ${Math.round(bestU)}ms | qUnits: [${q.join(",")}]`);
-      
       renderScore(buildMeasures(q), bpm);
     };
 
@@ -227,7 +239,7 @@
       lastKeyTime = now;
       times.push(now);
       $("noteCount").textContent = times.length;
-      sysLog(`Note ${times.length} 偵測`);
+      sysLog(`偵測 Note ${times.length}`);
     };
   </script>
 </body>
