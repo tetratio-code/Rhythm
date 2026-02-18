@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王5</h1>
+  <h1 style="margin: 0 0 10px;">節奏王</h1>
 
   <div class="box">
     <div class="row">
@@ -56,11 +56,14 @@
     <div id="log" style="margin-top: 8px;"></div>
   </div>
 
-  <!-- VexFlow -->
-  <script src="https://cdn.jsdelivr.net/npm/vexflow@5.0.0/build/vexflow.js"></script>
-  <script>
-    // 把你原本 window.VF_ 的來源改成 Vex.Flow
-    window.VF_ = Vex.Flow;
+  <!-- VexFlow (ESM) -->
+  <script type="module">
+    import {
+      Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot
+    } from "https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js";
+
+    // 讓非 module 的主程式可以用
+    window.VF_ = { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot };
   </script>
 
   <script>
@@ -136,42 +139,31 @@
 
       intervals = [];
       for (let i=1; i<times.length; i++) intervals.push(times[i] - times[i-1]);
-      
-      console.log("STOP, times:", times.length, "intervals:", intervals);
-      
+
       analyzeAndRender(intervals);
       setStatus("已輸出五線譜", "ok");
     }
 
     document.addEventListener("keydown", (e) => {
       if (!isRecording) return;
-    
-      // 不在 keydown 處理 Space（避免重複觸發/被吃掉）
+
       if (e.code === "Space") {
         e.preventDefault();
+        stopRecording();
         return;
       }
-    
+
       const now = performance.now();
       if (lastKeyTime >= 0 && (now - lastKeyTime) < DEBOUNCE_MS) return;
       lastKeyTime = now;
-    
+
       if (times.length >= MAX_NOTES) {
         stopRecording();
         return;
       }
-    
+
       times.push(now);
       $("noteCount").textContent = String(times.length);
-    });
-    
-    // 用 keyup 來結束
-    document.addEventListener("keyup", (e) => {
-      if (!isRecording) return;
-      if (e.code === "Space") {
-        e.preventDefault();
-        stopRecording();
-      }
     });
 
     $("btnStart").addEventListener("click", startRecording);
@@ -290,18 +282,12 @@
         `raw intervals (ms):\n${rawLine}\n\nquantized (16th units):\n${qLine}\n\nbars: 4/4, 16 units per bar`;
 
       const measures = buildMeasuresFromQuantized(q);
-      try {
-        renderWithVexFlow(measures, Math.round(bpm));
-      } catch (err) {
-        console.error("renderWithVexFlow failed:", err);
-        setStatus("繪譜失敗（請看 Console）", "warn");
-        renderEmptyScore("繪譜失敗：請開啟 Console 查看錯誤訊息。");
-      }
+      renderWithVexFlow(measures, Math.round(bpm));
     }
 
     // ======== VexFlow 繪製（使用 window.VF_） ========
     function renderWithVexFlow(measures, bpm) {
-      const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, Flow } = window.VF_;
+      const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot } = window.VF_;
       const container = document.getElementById("score");
       container.innerHTML = "";
     
@@ -309,6 +295,7 @@
       const lineStaffHeight = 170;
       const maxWidth = Math.max(950, Math.min(1500, container.clientWidth || 1100));
     
+      // ---- 先把每小節轉成 vexNotes（保留，後面還要 beam）----
       const all = measures.map(tokens => {
         const vexNotes = tokens.map(t => {
           const dur = t.dur + (t.isRest ? "r" : "");
@@ -319,11 +306,14 @@
         return { vexNotes };
       });
     
+      // ---- 動態估算每小節需要的寬度：音符越多越寬，避免擠爆 ----
+      // 一個很實用的 heuristic：base + noteCount*factor（再 clamp）
       function measureWidthFor(vexNotes) {
         const n = vexNotes.length;
         return Math.max(180, Math.min(340, 120 + n * 22));
       }
     
+      // ---- 行分配：把小節塞進一行，直到超過 maxWidth ----
       const lines = [];
       let curLine = [];
       let curW = margin;
@@ -345,10 +335,14 @@
       renderer.resize(maxWidth, totalH);
       const ctx = renderer.getContext();
     
-      const BEAT_TICKS = Flow.RESOLUTION / 4; // 4096
-      // const BAR_TICKS  = Flow.RESOLUTION;     // 16384（你目前沒用到可先刪）
+      // ---- 拍內 beam：每拍(1/4) = 1024 ticks（在 VexFlow 裡）----
+      // 我們用 ticks 來切拍，避免附點/混合音值把 generateBeams 搞亂
+      const BEAT_TICKS = 1024;         // quarter
+      const BAR_TICKS = BEAT_TICKS*4;  // 4/4
     
       function isBeamable(note) {
+        // 只連 8/16（含附點八分通常不連）
+        // duration 字串例： "8", "16", "8r", "q", "h"...
         const d = note.getDuration();
         if (note.isRest && note.isRest()) return false;
         return (d === "8" || d === "16" || d === "32");
@@ -357,19 +351,21 @@
       function buildBeamsByBeat(vexNotes) {
         const beams = [];
         let beatPos = 0;
-        let group = [];
+        let group = [];   // 同一拍內可連的 notes
     
         function flushGroup() {
-          if (group.length >= 2) beams.push(new Beam(group));
+          if (group.length >= 2) {
+            beams.push(new Beam(group));
+          }
           group = [];
         }
     
         for (const n of vexNotes) {
-          const ticks = n.getTicks().value();
-    
-          if (beatPos > 0 && beatPos + ticks > BEAT_TICKS) {
+          const ticks = n.getTicks().value(); // Fraction
+          // 若跨拍或遇到不可連的，先 flush
+          if (beatPos >= BEAT_TICKS) {
+            beatPos = beatPos % BEAT_TICKS;
             flushGroup();
-            beatPos = 0;
           }
     
           if (!isBeamable(n)) {
@@ -380,16 +376,20 @@
     
           beatPos += ticks;
     
+          // 一拍結束也 flush，確保按拍分組
           if (beatPos === BEAT_TICKS) {
             flushGroup();
-            beatPos = 0;
+          } else if (beatPos > BEAT_TICKS) {
+            // 罕見：音符跨拍（理論上你的拆分已避免）
+            flushGroup();
+            beatPos = beatPos % BEAT_TICKS;
           }
         }
-    
         flushGroup();
         return beams;
       }
     
+      // ---- 畫每一行 ----
       let y = margin;
     
       for (let li = 0; li < lines.length; li++) {
@@ -413,8 +413,10 @@
     
           new Formatter().joinVoices([voice]).format([voice], w - 30);
     
+          // 先畫音符
           voice.draw(ctx, stave);
     
+          // 再按拍做 beam
           const beams = buildBeamsByBeat(vexNotes);
           beams.forEach(b => b.setContext(ctx).draw());
     
