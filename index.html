@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.5 - 專業記譜版</title>
+  <title>節奏王 v2.6 - 符尾修正版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.5</h1>
+  <h1>節奏王 v2.6</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎載入中...</button>
@@ -32,8 +32,8 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">F4 Octave & Rest-Fill Diagnostics</b>
-    <div id="log">正在校準 F4 音高與休止符邏輯...</div>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Music Notation Refinement Monitor</b>
+    <div id="log">正在修正符尾與符槓衝突...</div>
   </div>
 
   <script type="module">
@@ -52,7 +52,7 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    sysLog("VexFlow 5.0 就緒。已套用 F4 音高與休止符補全。");
+    sysLog("VexFlow 5.0 就緒。符尾自動隱形邏輯已套用。");
     $("btnStart").disabled = false;
     $("btnStart").textContent = "開始錄入";
     $("statusText").textContent = "待機";
@@ -88,7 +88,7 @@
           if (usedInBar >= 16) { measures.push(curMeasure); curMeasure = []; usedInBar = 0; }
         }
       });
-      // 修正：恢復補滿「休止符」的動作，移除無效的符旗
+      // 恢復補滿休止符
       if (usedInBar > 0) {
         getDurations(16 - usedInBar, true).forEach(p => curMeasure.push(p));
         measures.push(curMeasure);
@@ -121,8 +121,8 @@
           if (isFirst) stave.addClef("treble").addTimeSignature("4/4");
           stave.setContext(ctx).draw();
 
+          // 1. 建立音符 (F4, Stem Up)
           const vNotes = measure.map(t => {
-            // 修正：音高改為 F4 (五線譜第一間)，補齊部分使用標準休止符語法 'r'
             const n = new StaveNote({ 
               clef: "treble", 
               keys: ["f/4"], 
@@ -134,6 +134,7 @@
             return n;
           });
 
+          // 2. 連結線追蹤
           measure.forEach(token => {
             if (pendingTieNote && !token.isRest) {
               allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
@@ -144,19 +145,28 @@
 
           const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
           voice.addTickables(vNotes);
+          
+          // 3. 格式化排版
           new Formatter().joinVoices([voice]).formatToStave([voice], stave);
+
+          // 4. 關鍵修正：先產生 Beams，再繪製 Voice
+          // 這樣音符在繪製時會知道自己已被 Beam，從而刪除原有的符尾
+          const notesToBeam = vNotes.filter((n, i) => !measure[i].isRest);
+          const beams = Beam.generateBeams(notesToBeam, { 
+            groups: [new Fraction(1, 4)] 
+          });
+
+          // 5. 繪製音符 (此時音符已標記為 beamed，不會顯示符尾)
           voice.draw(ctx, stave);
 
-          // 修正：連槓只作用於音符，過濾掉休止符以移除「尾巴」線條
-          const notesToBeam = vNotes.filter((n, i) => !measure[i].isRest);
-          const beams = Beam.generateBeams(notesToBeam, { groups: [new Fraction(1, 4)] });
+          // 6. 繪製符槓
           beams.forEach(b => b.setContext(ctx).draw());
           
           curX += stave.getWidth();
         });
 
         allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`渲染成功：移除符旗尾巴並恢復休止符。`);
+        sysLog(`渲染成功：已消除重複顯示的符尾。`);
       } catch (e) {
         sysLog("渲染錯誤: " + e.message, true);
       }
@@ -178,7 +188,6 @@
       
       const itvs = [];
       for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
-      
       const min = itvs.length > 0 ? Math.min(...itvs) : 250; 
       let bestU = min, bestS = Infinity;
       for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
@@ -186,10 +195,9 @@
         let s = itvs.length > 0 ? err/u : 0;
         if (s < bestS) { bestS = s; bestU = u; }
       }
-
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
 
-      // 修正：最後一個音自動補滿當下 4 分音符的空缺
+      // 自動補滿當下 4 分音符空缺
       const totalUnitsSoFar = q.reduce((sum, val) => sum + val, 0);
       const unitsInCurrentBeat = totalUnitsSoFar % 4;
       const fillUnits = 4 - unitsInCurrentBeat; 
@@ -198,7 +206,6 @@
       const bpm = Math.round(60000 / (bestU * 4));
       $("bpmText").textContent = bpm;
       $("statusText").textContent = "完成";
-      sysLog(`分析完成。補滿最後音符長度並填充休止符。`);
       renderScore(buildMeasures(q), bpm);
     };
 
