@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <h1 style="margin: 0 0 10px;">節奏王3</h1>
+  <h1 style="margin: 0 0 10px;">節奏王4</h1>
 
   <div class="box">
     <div class="row">
@@ -138,31 +138,42 @@
 
       intervals = [];
       for (let i=1; i<times.length; i++) intervals.push(times[i] - times[i-1]);
-
+      
+      console.log("STOP, times:", times.length, "intervals:", intervals);
+      
       analyzeAndRender(intervals);
       setStatus("已輸出五線譜", "ok");
     }
 
     document.addEventListener("keydown", (e) => {
       if (!isRecording) return;
-
+    
+      // 不在 keydown 處理 Space（避免重複觸發/被吃掉）
       if (e.code === "Space") {
         e.preventDefault();
-        stopRecording();
         return;
       }
-
+    
       const now = performance.now();
       if (lastKeyTime >= 0 && (now - lastKeyTime) < DEBOUNCE_MS) return;
       lastKeyTime = now;
-
+    
       if (times.length >= MAX_NOTES) {
         stopRecording();
         return;
       }
-
+    
       times.push(now);
       $("noteCount").textContent = String(times.length);
+    });
+    
+    // 用 keyup 來結束
+    document.addEventListener("keyup", (e) => {
+      if (!isRecording) return;
+      if (e.code === "Space") {
+        e.preventDefault();
+        stopRecording();
+      }
     });
 
     $("btnStart").addEventListener("click", startRecording);
@@ -281,7 +292,13 @@
         `raw intervals (ms):\n${rawLine}\n\nquantized (16th units):\n${qLine}\n\nbars: 4/4, 16 units per bar`;
 
       const measures = buildMeasuresFromQuantized(q);
-      renderWithVexFlow(measures, Math.round(bpm));
+      try {
+        renderWithVexFlow(measures, Math.round(bpm));
+      } catch (err) {
+        console.error("renderWithVexFlow failed:", err);
+        setStatus("繪譜失敗（請看 Console）", "warn");
+        renderEmptyScore("繪譜失敗：請開啟 Console 查看錯誤訊息。");
+      }
     }
 
     // ======== VexFlow 繪製（使用 window.VF_） ========
