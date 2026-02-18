@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v1.7 - 穩定排版版</title>
+  <title>節奏王 v1.8 - 連結線修復版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v1.7</h1>
+  <h1>節奏王 v1.8</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎加載中...</button>
@@ -32,7 +32,7 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Engine Monitor & Diagnostics</b>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Tie & Beaming Stability Monitor</b>
     <div id="log">系統啟動中...</div>
   </div>
 
@@ -53,7 +53,6 @@
     let isRecording = false, times = [], lastKeyTime = -1;
     const MAX_NOTES = 100, DEBOUNCE = 50;
 
-    // --- 異步加載 VexFlow ---
     (async function loadVexFlow() {
       try {
         const Vex = await import("https://cdn.jsdelivr.net/npm/vexflow@5.0.0/build/esm/entry/vexflow.js");
@@ -61,19 +60,14 @@
         $("btnStart").disabled = false;
         $("btnStart").textContent = "開始錄入";
         $("statusText").textContent = "待機";
-        sysLog("VexFlow 引擎就緒。分組策略：四分音符 (1/4 拍)。");
+        sysLog("VexFlow 5.0 引擎就緒。已修正連結線參數命名。");
       } catch (err) {
-        sysLog("引擎加載失敗，請檢查連線。", true);
+        sysLog("引擎加載失敗。", true);
       }
     })();
 
-    // --- 時值與小節處理 ---
     function getDurations(units, isRest=false) {
-      const opts = [
-        {u:16, d:"w"}, {u:12, d:"h", dt:1}, {u:8, d:"h"},
-        {u:6, d:"q", dt:1}, {u:4, d:"q"}, {u:3, d:"8", dt:1},
-        {u:2, d:"8"}, {u:1, d:"16"}
-      ];
+      const opts = [{u:16, d:"w"}, {u:12, d:"h", dt:1}, {u:8, d:"h"}, {u:6, d:"q", dt:1}, {u:4, d:"q"}, {u:3, d:"8", dt:1}, {u:2, d:"8"}, {u:1, d:"16"}];
       let res = [], rem = units;
       while (rem > 0) {
         let p = opts.find(o => o.u <= rem) || opts[opts.length-1];
@@ -93,6 +87,7 @@
           let take = Math.min(rem, spaceInBeat);
           let parts = getDurations(take, false);
           parts.forEach((p, idx) => {
+            // 標記連結線：如果是內部分解或是未完待續 (跨拍子/小節)
             p.isTie = (idx < parts.length - 1) || (rem > take);
             curMeasure.push(p);
           });
@@ -100,7 +95,6 @@
           if (usedInBar >= 16) { measures.push(curMeasure); curMeasure = []; usedInBar = 0; }
         }
       });
-      // 自動補齊最後一小節
       if (usedInBar > 0) {
         getDurations(16 - usedInBar, true).forEach(p => curMeasure.push(p));
         measures.push(curMeasure);
@@ -108,48 +102,57 @@
       return measures;
     }
 
-    // --- 穩定渲染函數 ---
     function renderScore(measures, bpm) {
-      if (!VF) return sysLog("渲染失敗：引擎未加載", true);
+      if (!VF) return sysLog("引擎未加載", true);
       try {
         const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
         
-        // 動態計算寬度：每小節約 250px，但不超過螢幕寬
-        const measureWidth = 250;
+        const measureWidth = 260;
         const totalWidth = Math.min(window.innerWidth - 80, measures.length * measureWidth + 100);
-        
         const renderer = new Renderer(container, Renderer.Backends.SVG);
         renderer.resize(totalWidth, 180);
         const ctx = renderer.getContext();
-        let x = 10, allTies = [];
+        
+        let x = 10;
+        let allTies = [];
+        let pendingTieNote = null; // 用於跨小節連結追蹤
 
         measures.forEach((measure, idx) => {
           const stave = new Stave(x, 40, measureWidth);
           if (idx === 0) stave.addClef("treble").addTimeSignature("4/4").setText(`♩ = ${bpm}`, 1, { shift_y: -10 });
           stave.setContext(ctx).draw();
 
+          // 1. 產生音符並保存引用
           const vNotes = measure.map(t => {
             const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: t.dur + (t.isRest ? "r" : "") });
             if (t.dots) Dot.buildAndAttach([n], { all: true });
-            t.vfNote = n; return n;
+            t.vfNote = n;
+            return n;
           });
 
-          // 處理連結線
-          for (let i = 0; i < measure.length - 1; i++) {
-            if (measure[i].isTie && !measure[i].isRest && !measure[i+1].isRest) {
-              allTies.push(new StaveTie({ first_note: measure[i].vfNote, last_note: measure[i+1].vfNote }));
+          // 2. 連結線邏輯修正：使用繼承追蹤法
+          measure.forEach(token => {
+            // 如果前一個音符有 Tie 標記，且當前音符不是休止符
+            if (pendingTieNote && !token.isRest) {
+              allTies.push(new StaveTie({
+                firstNote: pendingTieNote,  // 修正為 VexFlow 5 命名的 camelCase
+                lastNote: token.vfNote
+              }));
+              pendingTieNote = null;
             }
-          }
+            // 如果當前音符需要向後連結
+            if (token.isTie && !token.isRest) {
+              pendingTieNote = token.vfNote;
+            }
+          });
 
           const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
           voice.addTickables(vNotes);
-          
-          // 排版優化：Formatter 寬度與 stave 寬度掛鉤
           new Formatter().joinVoices([voice]).format([voice], measureWidth - 50);
           voice.draw(ctx, stave);
 
-          // 實現 (8+16+16) 分組核心
+          // 3. 強制分組 Beaming
           const beams = Beam.generateBeams(vNotes, { groups: [new Fraction(1, 4)] });
           beams.forEach(b => b.setContext(ctx).draw());
           
@@ -157,20 +160,19 @@
         });
 
         allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`成功渲染 ${measures.length} 小節。`);
+        sysLog(`成功渲染並修復連結線參數。`);
       } catch (e) {
-        sysLog("渲染過程發生錯誤：" + e.message, true);
+        sysLog("渲染錯誤: " + e.message, true);
         console.error(e);
       }
     }
 
-    // --- 事件綁定 ---
     $("btnStart").onclick = () => {
       isRecording = true; times = [];
       $("btnStart").disabled = true; $("btnStop").disabled = false;
       $("statusText").textContent = "錄入中...";
       $("statusText").className = "status-active";
-      $("score").innerHTML = "正在捕捉節奏速度...";
+      $("score").innerHTML = "正在捕捉節奏...";
       sysLog("開始錄入...");
     };
 
@@ -178,28 +180,20 @@
       isRecording = false;
       $("btnStart").disabled = false; $("btnStop").disabled = true;
       $("statusText").className = "";
-      if (times.length < 2) {
-        sysLog("失敗：至少需錄入兩個音符以計算速度。", true);
-        return;
-      }
+      if (times.length < 2) return sysLog("音符不足", true);
       
       const itvs = [];
       for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
-      
-      // 計算最合適的速度 (BPM)
       const min = Math.min(...itvs);
       let bestU = min, bestS = Infinity;
       for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
         let err = itvs.reduce((a, x) => a + Math.abs(x - Math.max(1, Math.round(x/u))*u), 0);
         if (err/u < bestS) { bestS = err/u; bestU = u; }
       }
-      
       const bpm = Math.round(60000 / (bestU * 4));
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
       $("bpmText").textContent = bpm;
       $("statusText").textContent = "完成分析";
-      sysLog(`分析速度: ${bpm} BPM。量化單位: ${Math.round(bestU)}ms。`);
-      
       renderScore(buildMeasures(q), bpm);
     };
 
@@ -216,7 +210,6 @@
       $("noteCount").textContent = times.length;
       sysLog(`偵測音符 ${times.length}`);
     };
-
   </script>
 </body>
 </html>
