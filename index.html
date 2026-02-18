@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.2 - 穩定啟動版</title>
+  <title>節奏王 v2.3 - 專業記譜版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.2</h1>
+  <h1>節奏王 v2.3</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎載入中...</button>
@@ -32,8 +32,8 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Bootloader & Linear Spacing Monitor</b>
-    <div id="log">正在連線至 CDN 載入音樂引擎...</div>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Professional Notation & Auto-Fill Monitor</b>
+    <div id="log">正在初始化記譜引擎...</div>
   </div>
 
   <script type="module">
@@ -52,8 +52,7 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // 引擎就緒後初始化介面
-    sysLog("VexFlow 5.0 引擎載入完成。");
+    sysLog("VexFlow 5.0 載入成功。");
     $("btnStart").disabled = false;
     $("btnStart").textContent = "開始錄入";
     $("statusText").textContent = "待機";
@@ -101,9 +100,8 @@
         const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
         
-        // 1. 定義物理比例
         const TICK_PX = 25; 
-        const CONTENT_WIDTH = 16 * TICK_PX; // 固定 400px
+        const CONTENT_WIDTH = 16 * TICK_PX; 
         const FIRST_BAR_PADDING = 80; 
         
         const totalWidth = (measures.length * CONTENT_WIDTH) + FIRST_BAR_PADDING + 100;
@@ -118,13 +116,18 @@
         measures.forEach((measure, idx) => {
           const isFirst = (idx === 0);
           const barWidth = CONTENT_WIDTH + (isFirst ? FIRST_BAR_PADDING : 0);
-          
           const stave = new Stave(curX, 40, barWidth);
           if (isFirst) stave.addClef("treble").addTimeSignature("4/4");
           stave.setContext(ctx).draw();
 
           const vNotes = measure.map(t => {
-            const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: t.dur + (t.isRest ? "r" : "") });
+            // 修改點 1: 音符改為 F/5，強制符桿向上 (stem_direction: 1)
+            const n = new StaveNote({ 
+              clef: "treble", 
+              keys: ["f/5"], 
+              duration: t.dur + (t.isRest ? "r" : ""),
+              stem_direction: 1 
+            });
             if (t.dots) Dot.buildAndAttach([n], { all: true });
             t.vfNote = n;
             return n;
@@ -132,44 +135,41 @@
 
           measure.forEach(token => {
             if (pendingTieNote && !token.isRest) {
+              // 修改點 2: 連結線在符桿向上的情況下會自動在下方，確保對應 VexFlow 5 語法
               allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
               pendingTieNote = null;
             }
             if (token.isTie && !token.isRest) pendingTieNote = token.vfNote;
           });
 
-          // 2. 使用 formatToStave 修正漂移與位置錯誤
           const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
           voice.addTickables(vNotes);
-          
-          const formatter = new Formatter();
-          formatter.joinVoices([voice]).formatToStave([voice], stave);
+          new Formatter().joinVoices([voice]).formatToStave([voice], stave);
           voice.draw(ctx, stave);
 
+          // 修改點 3: 橫桿 (Beam) 在上方是符桿向上時的預設行為
           const beams = Beam.generateBeams(vNotes, { groups: [new Fraction(1, 4)] });
           beams.forEach(b => b.setContext(ctx).draw());
           
-          // 3. 更新下一個小節的起始點，確保無縫對齊
           curX += stave.getWidth();
         });
 
         allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`線性渲染完成。16分音符距離已固定。`);
+        sysLog(`渲染完成。音高: F5，符桿向上，自動補滿拍子。`);
       } catch (e) {
         sysLog("渲染錯誤: " + e.message, true);
       }
     }
 
     $("btnStart").onclick = () => {
-      isRecording = true; times = [];
+      isRecording = true; times = []; lastKeyTime = -1;
       $("btnStart").disabled = true; $("btnStop").disabled = false;
       $("statusText").textContent = "錄入中...";
       $("statusText").className = "status-active";
-      sysLog("開始錄音...");
+      sysLog("開始錄入...");
     };
 
     const stopRecording = () => {
-      const stopTime = performance.now(); 
       isRecording = false;
       $("btnStart").disabled = false; $("btnStop").disabled = true;
       $("statusText").className = "";
@@ -178,21 +178,30 @@
       const itvs = [];
       for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
       
-      // 捕捉最後一個音符的時值
-      const lastItv = stopTime - times[times.length - 1];
-      itvs.push(Math.max(lastItv, 150)); 
-      
-      const min = Math.min(...itvs);
+      const min = itvs.length > 0 ? Math.min(...itvs) : 250; 
       let bestU = min, bestS = Infinity;
-      for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
+      const startU = Math.max(40, min*0.5);
+      const endU = min*2.2;
+
+      for (let u = startU; u <= endU; u++) {
         let err = itvs.reduce((a, x) => a + Math.abs(x - Math.max(1, Math.round(x/u))*u), 0);
-        if (err/u < bestS) { bestS = err/u; bestU = u; }
+        let s = itvs.length > 0 ? err/u : 0;
+        if (s < bestS) { bestS = s; bestU = u; }
       }
-      const bpm = Math.round(60000 / (bestU * 4));
+
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
-      
+
+      // 修改點 4: 最後一個音不看時間差，改為「自動補滿當下 4 分音符空缺」
+      // 計算目前已使用的總單位量 (16 分音符為 1 單位)
+      const totalUnitsSoFar = q.reduce((sum, val) => sum + val, 0);
+      const unitsInCurrentBeat = totalUnitsSoFar % 4;
+      const fillUnits = 4 - unitsInCurrentBeat; // 補滿到下一個拍子開頭
+      q.push(fillUnits);
+
+      const bpm = Math.round(60000 / (bestU * 4));
       $("bpmText").textContent = bpm;
       $("statusText").textContent = "完成";
+      sysLog(`分析完成。補滿最後音符: ${fillUnits} 單位。`);
       renderScore(buildMeasures(q), bpm);
     };
 
