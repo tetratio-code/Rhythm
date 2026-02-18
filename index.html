@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v3.0 - 完美分組版</title>
+  <title>節奏王 v2.9 - 專業線性排版版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v3.0</h1>
+  <h1>節奏王 v2.9</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎載入中...</button>
@@ -32,8 +32,8 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Final Beaming & Tail-Note Alignment Monitor</b>
-    <div id="log">正在啟動 v3.0 音樂引擎...</div>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Professional Layout & Beaming Monitor</b>
+    <div id="log">系統正在載入 VexFlow 5.0 核心...</div>
   </div>
 
   <script type="module">
@@ -52,7 +52,8 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    sysLog("VexFlow 5.0 載入成功。最後音符強制分組已啟用。");
+    // 引擎準備就緒
+    sysLog("音樂引擎載入成功。目前音高：F4。分組：四分音符。");
     $("btnStart").disabled = false;
     $("btnStart").textContent = "開始錄入";
     $("statusText").textContent = "待機";
@@ -88,6 +89,7 @@
           if (usedInBar >= 16) { measures.push(curMeasure); curMeasure = []; usedInBar = 0; }
         }
       });
+      // 補滿最後一個小節的休止符
       if (usedInBar > 0) {
         getDurations(16 - usedInBar, true).forEach(p => curMeasure.push(p));
         measures.push(curMeasure);
@@ -100,7 +102,8 @@
         const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
         
-        const TICK_PX = 30; 
+        // --- 線性排版參數 ---
+        const TICK_PX = 25; 
         const CONTENT_WIDTH = 16 * TICK_PX; 
         const FIRST_BAR_PADDING = 80; 
         const totalWidth = (measures.length * CONTENT_WIDTH) + FIRST_BAR_PADDING + 100;
@@ -120,8 +123,8 @@
           if (isFirst) stave.addClef("treble").addTimeSignature("4/4");
           stave.setContext(ctx).draw();
 
-          // 1. 建立音符 (F4, Stem Up)
           const vNotes = measure.map(t => {
+            // 修改：音高 F4，符桿向上 (stem_direction: 1)
             const n = new StaveNote({ 
               clef: "treble", 
               keys: ["f/4"], 
@@ -133,9 +136,9 @@
             return n;
           });
 
-          // 2. 連結線
           measure.forEach(token => {
             if (pendingTieNote && !token.isRest) {
+              // 連結線在下方
               allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
               pendingTieNote = null;
             }
@@ -144,17 +147,17 @@
 
           const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
           voice.addTickables(vNotes);
+          
+          // 格式化對齊
           new Formatter().joinVoices([voice]).formatToStave([voice], stave);
 
-          // 3. 核心修正：手動計算拍子邊界，確保最後一個音符被連槓
-          // 我們傳遞包含最後一個補全音符的完整數組
+          // 核心修正：包含最後一個音符的完整分組行為
+          // 先產生連槓，VexFlow 會自動標記 beamed 狀態以移除符尾
           const beams = Beam.generateBeams(vNotes, { 
-            groups: [new Fraction(1, 4)],
-            beam_rests: false,
-            beam_middle_only: false
+            groups: [new Fraction(1, 4)] 
           });
 
-          // 4. 繪製順序修正：先關聯 beams 再 draw，確保消除符尾
+          // 繪製音符與連槓
           voice.draw(ctx, stave);
           beams.forEach(b => b.setContext(ctx).draw());
           
@@ -162,7 +165,7 @@
         });
 
         allTies.forEach(t => t.setContext(ctx).draw());
-        sysLog(`渲染成功。最後音符已強制連槓，並消除雙重符尾。`);
+        sysLog(`成功渲染。線性比例：${TICK_PX}px/單位。`);
       } catch (e) {
         sysLog("渲染錯誤: " + e.message, true);
       }
@@ -193,7 +196,7 @@
       }
       const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
 
-      // 最後一個音符補滿當下拍子空缺
+      // 修改：最後一個音符補滿當下 4 分音符空缺
       const totalUnits = q.reduce((sum, val) => sum + val, 0);
       const fillUnits = 4 - (totalUnits % 4); 
       q.push(fillUnits);
