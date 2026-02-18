@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.1 - 完美排版版</title>
+  <title>節奏王 v2.2 - 穩定啟動版</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,10 +18,10 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.1</h1>
+  <h1>節奏王 v2.2</h1>
 
   <div class="box">
-    <button id="btnStart" disabled>引擎加載中...</button>
+    <button id="btnStart" disabled>引擎載入中...</button>
     <button id="btnStop" disabled>Space 結束</button>
     <button id="btnReset">重置系統</button>
     <span class="pill">狀態：<b id="statusText">初始化...</b></span>
@@ -32,11 +32,14 @@
   <div id="score"></div>
 
   <div class="box" style="background: #282a36; border: none;">
-    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Linear Spacing & Measure Alignment Monitor</b>
-    <div id="log">系統啟動中...</div>
+    <b style="color: #6272a4; font-size: 10px; text-transform: uppercase;">Bootloader & Linear Spacing Monitor</b>
+    <div id="log">正在連線至 CDN 載入音樂引擎...</div>
   </div>
 
   <script type="module">
+    import * as Vex from "https://unpkg.com/vexflow@5.0.0/build/esm/entry/vexflow.js";
+    
+    const VF = Vex;
     const $ = (id) => document.getElementById(id);
     const logEl = $("log");
     
@@ -49,22 +52,14 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    let VF = null;
+    // 引擎就緒後初始化介面
+    sysLog("VexFlow 5.0 引擎載入完成。");
+    $("btnStart").disabled = false;
+    $("btnStart").textContent = "開始錄入";
+    $("statusText").textContent = "待機";
+
     let isRecording = false, times = [], lastKeyTime = -1;
     const MAX_NOTES = 100, DEBOUNCE = 50;
-
-    (async function loadVexFlow() {
-      try {
-        const Vex = await import("https://cdn.jsdelivr.net/npm/vexflow@5.0.0/build/esm/entry/vexflow.js");
-        VF = Vex;
-        $("btnStart").disabled = false;
-        $("btnStart").textContent = "開始錄入";
-        $("statusText").textContent = "待機";
-        sysLog("VexFlow 5.0 就緒。完美線性排版已啟用。");
-      } catch (err) {
-        sysLog("引擎加載失敗。", true);
-      }
-    })();
 
     function getDurations(units, isRest=false) {
       const opts = [{u:16, d:"w"}, {u:12, d:"h", dt:1}, {u:8, d:"h"}, {u:6, d:"q", dt:1}, {u:4, d:"q"}, {u:3, d:"8", dt:1}, {u:2, d:"8"}, {u:1, d:"16"}];
@@ -101,30 +96,26 @@
       return measures;
     }
 
-    // --- 核心修正：線性排版渲染 ---
     function renderScore(measures, bpm) {
-      if (!VF) return sysLog("渲染失敗：引擎未加載", true);
       try {
         const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
         
-        // 1. 定義物理比例：每個 16 分音符 tick 佔 25px
+        // 1. 定義物理比例
         const TICK_PX = 25; 
-        const CONTENT_WIDTH = 16 * TICK_PX; // 400px
-        const FIRST_BAR_PADDING = 80; // 第一小節譜號寬度
+        const CONTENT_WIDTH = 16 * TICK_PX; // 固定 400px
+        const FIRST_BAR_PADDING = 80; 
         
-        // 2. 計算總畫布寬度
         const totalWidth = (measures.length * CONTENT_WIDTH) + FIRST_BAR_PADDING + 100;
         const renderer = new Renderer(container, Renderer.Backends.SVG);
         renderer.resize(totalWidth, 200);
         const ctx = renderer.getContext();
         
-        let curX = 20; // 起始 X
+        let curX = 20; 
         let allTies = [];
         let pendingTieNote = null;
 
         measures.forEach((measure, idx) => {
-          // 3. 計算當前小節寬度
           const isFirst = (idx === 0);
           const barWidth = CONTENT_WIDTH + (isFirst ? FIRST_BAR_PADDING : 0);
           
@@ -132,7 +123,6 @@
           if (isFirst) stave.addClef("treble").addTimeSignature("4/4");
           stave.setContext(ctx).draw();
 
-          // 4. 準備音符
           const vNotes = measure.map(t => {
             const n = new StaveNote({ clef: "treble", keys: ["c/5"], duration: t.dur + (t.isRest ? "r" : "") });
             if (t.dots) Dot.buildAndAttach([n], { all: true });
@@ -140,7 +130,6 @@
             return n;
           });
 
-          // 5. 連結線邏輯
           measure.forEach(token => {
             if (pendingTieNote && !token.isRest) {
               allTies.push(new StaveTie({ firstNote: pendingTieNote, lastNote: token.vfNote }));
@@ -149,5 +138,77 @@
             if (token.isTie && !token.isRest) pendingTieNote = token.vfNote;
           });
 
-          // 6. 關鍵修正：使用 formatToStave 確保音符與小節線嚴格對齊
-          const voice = new Voice({ num_beats: 4, beat_value:
+          // 2. 使用 formatToStave 修正漂移與位置錯誤
+          const voice = new Voice({ num_beats: 4, beat_value: 4 }).setMode(Voice.Mode.SOFT);
+          voice.addTickables(vNotes);
+          
+          const formatter = new Formatter();
+          formatter.joinVoices([voice]).formatToStave([voice], stave);
+          voice.draw(ctx, stave);
+
+          const beams = Beam.generateBeams(vNotes, { groups: [new Fraction(1, 4)] });
+          beams.forEach(b => b.setContext(ctx).draw());
+          
+          // 3. 更新下一個小節的起始點，確保無縫對齊
+          curX += stave.getWidth();
+        });
+
+        allTies.forEach(t => t.setContext(ctx).draw());
+        sysLog(`線性渲染完成。16分音符距離已固定。`);
+      } catch (e) {
+        sysLog("渲染錯誤: " + e.message, true);
+      }
+    }
+
+    $("btnStart").onclick = () => {
+      isRecording = true; times = [];
+      $("btnStart").disabled = true; $("btnStop").disabled = false;
+      $("statusText").textContent = "錄入中...";
+      $("statusText").className = "status-active";
+      sysLog("開始錄音...");
+    };
+
+    const stopRecording = () => {
+      const stopTime = performance.now(); 
+      isRecording = false;
+      $("btnStart").disabled = false; $("btnStop").disabled = true;
+      $("statusText").className = "";
+      if (times.length < 1) return;
+      
+      const itvs = [];
+      for(let i=1; i<times.length; i++) itvs.push(times[i] - times[i-1]);
+      
+      // 捕捉最後一個音符的時值
+      const lastItv = stopTime - times[times.length - 1];
+      itvs.push(Math.max(lastItv, 150)); 
+      
+      const min = Math.min(...itvs);
+      let bestU = min, bestS = Infinity;
+      for (let u = Math.max(40, min*0.5); u <= min*2.2; u++) {
+        let err = itvs.reduce((a, x) => a + Math.abs(x - Math.max(1, Math.round(x/u))*u), 0);
+        if (err/u < bestS) { bestS = err/u; bestU = u; }
+      }
+      const bpm = Math.round(60000 / (bestU * 4));
+      const q = itvs.map(x => Math.max(1, Math.round(x / bestU)));
+      
+      $("bpmText").textContent = bpm;
+      $("statusText").textContent = "完成";
+      renderScore(buildMeasures(q), bpm);
+    };
+
+    $("btnStop").onclick = stopRecording;
+    $("btnReset").onclick = () => location.reload();
+
+    document.onkeydown = (e) => {
+      if (!isRecording) return;
+      if (e.code === "Space") { e.preventDefault(); stopRecording(); return; }
+      const now = performance.now();
+      if (lastKeyTime > 0 && (now - lastKeyTime) < DEBOUNCE) return;
+      lastKeyTime = now;
+      times.push(now);
+      $("noteCount").textContent = times.length;
+      sysLog(`偵測音符 ${times.length}`);
+    };
+  </script>
+</body>
+</html>
