@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <title>節奏王 v2.9 - 專業線性排版版</title>
+  <title>節奏王 v2.9</title>
   <style>
     :root { font-family: system-ui, sans-serif; }
     body { margin: 18px; line-height: 1.45; background-color: #f0f2f5; }
@@ -18,7 +18,7 @@
   </style>
 </head>
 <body>
-  <h1>節奏王 v2.9</h1>
+  <h1>節奏王 v2.9debug</h1>
 
   <div class="box">
     <button id="btnStart" disabled>引擎載入中...</button>
@@ -98,6 +98,23 @@
     }
 
     function renderScore(measures, bpm) {
+      // 請將此段放入 renderScore(measures, bpm) 函式內
+      console.group("🎵 VexFlow 渲染調試資訊");
+      console.log("當前估算 BPM:", bpm);
+      console.log("小節總數:", measures.length);
+      console.log("原始小節數據結構 (Measures):", JSON.parse(JSON.stringify(measures)));
+      
+      measures.forEach((m, i) => {
+          console.log(`第 ${i+1} 小節音符數:`, m.length);
+          console.table(m.map(token => ({
+              "Vex Duration": token.dur + (token.isRest ? "r" : ""),
+              "附點": token.dots,
+              "16分音符單位": token.units,
+              "是否連譜 (Tie)": token.isTie,
+              "是否休止": token.isRest
+          })));
+      });
+      console.groupEnd();
       try {
         const { Renderer, Stave, StaveNote, Voice, Formatter, Beam, Dot, StaveTie, Fraction } = VF;
         const container = $("score"); container.innerHTML = "";
